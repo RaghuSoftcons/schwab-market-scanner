@@ -5,6 +5,20 @@ Railway-ready premarket/intraday scanner that reuses the working Schwab token an
 - `D:\Google Drive\0.00 ChatGPT Codex\ChatGPT to Schwab Integration CLEAN`
 - `D:\Google Drive\0.00 ChatGPT Codex\NT to Schwab Integration`
 
+## Current Railway Deployment
+
+Project: `imaginative-growth`
+
+Service: `schwab-market-scanner`
+
+URL:
+
+```text
+https://schwab-market-scanner-production.up.railway.app
+```
+
+The deployed service is currently in dry-run mode with live order gates closed.
+
 ## What It Does
 
 - Scans market regime through `SPY`, `QQQ`, and `DIA`.
