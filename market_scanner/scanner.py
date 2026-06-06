@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import hashlib
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Literal, Sequence
 from zoneinfo import ZoneInfo
 
@@ -197,7 +197,7 @@ class MarketScanner:
         metrics: TickerMetrics,
         scanned_at: datetime,
     ) -> tuple[list[OptionProposal], list[str]]:
-        chain = list(self.option_provider(record))
+        chain = self._simulated_option_chain(record, scanned_at)
         planner = OptionProposalPlanner(_simulated_planner_config(self.planner_config))
         result = planner.plan(record, chain, scanned_at, underlying_price=metrics.current_price)
         proposals = [_mark_simulated_proposal(proposal) for proposal in result.proposals]
@@ -209,6 +209,23 @@ class MarketScanner:
             blocked.append("simulated_fallback_after_planner_filters")
             return fallback, list(dict.fromkeys(blocked))
         return [], list(dict.fromkeys([*blocked, "no_simulated_proposals_from_current_chain"]))
+
+    def _simulated_option_chain(self, record: SignalRecord, scanned_at: datetime) -> list[OptionContractSnapshot]:
+        symbol = self.planner_config.option_symbol_for(record.payload.symbol)
+        if symbol not in self.planner_config.allowed_symbols:
+            return []
+        right: OptionRight = "CALL" if record.payload.direction == "long" else "PUT"
+        local_date = scanned_at.astimezone(ZoneInfo(self.settings.scanner.timezone)).date()
+        contracts: list[OptionContractSnapshot] = []
+        for expiry in _simulated_replay_expiries(local_date):
+            contracts.extend(
+                self.equity_client.raw_client.get_option_chain(
+                    symbol=symbol,
+                    expiration=expiry,
+                    contract_type=right,
+                )
+            )
+        return contracts
 
 
 def compute_metrics(
@@ -406,9 +423,18 @@ def _simulated_planner_config(config: OptionPlannerConfig) -> OptionPlannerConfi
             "allow_in_the_money_primary": True,
             "min_debit_per_trade": 0,
             "max_debit_per_trade": max(config.max_debit_per_trade, 5_000),
+            "expiries": list(dict.fromkeys([*config.expiries, "NEXT_WEEK_FRIDAY"])),
             "target_delta_long": target_delta,
         },
     )
+
+
+def _simulated_replay_expiries(as_of_date: date) -> list[date]:
+    expiries = [
+        _add_business_days(as_of_date, 1),
+        _next_friday_after(as_of_date),
+    ]
+    return list(dict.fromkeys(expiries))
 
 
 def _mark_simulated_proposal(proposal: OptionProposal) -> OptionProposal:
@@ -596,3 +622,22 @@ def _round(value: float | int | None, places: int = 4) -> float | None:
 
 def _format_strike(strike: float) -> str:
     return str(int(strike)) if float(strike).is_integer() else str(strike)
+
+
+def _add_business_days(as_of_date: date, days: int) -> date:
+    if days <= 0:
+        return as_of_date
+    current = as_of_date
+    remaining = days
+    while remaining > 0:
+        current += timedelta(days=1)
+        if current.weekday() < 5:
+            remaining -= 1
+    return current
+
+
+def _next_friday_after(as_of_date: date) -> date:
+    days_until_friday = (4 - as_of_date.weekday()) % 7
+    if days_until_friday == 0:
+        days_until_friday = 7
+    return as_of_date + timedelta(days=days_until_friday)

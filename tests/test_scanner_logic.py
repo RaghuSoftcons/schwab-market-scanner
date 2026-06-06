@@ -9,7 +9,14 @@ from market_scanner.app import _is_simulated_proposal
 from market_scanner.config import _split_csv
 from market_scanner.models import Candle, MarketRegime, TickerMetrics
 from market_scanner.orders import schwab_order_payload
-from market_scanner.scanner import _signal_record, _simulated_fallback_proposals, candidate_score, classify_candidate, compute_metrics
+from market_scanner.scanner import (
+    _signal_record,
+    _simulated_fallback_proposals,
+    _simulated_replay_expiries,
+    candidate_score,
+    classify_candidate,
+    compute_metrics,
+)
 
 
 def test_symbol_splitter_accepts_commas_or_whitespace():
@@ -90,6 +97,13 @@ def test_simulated_fallback_proposal_is_marked_sim_only():
     assert proposals[0].id.startswith("sim_")
     assert "SIM_ONLY" in proposals[0].reasons
     assert _is_simulated_proposal(proposals[0])
+
+
+def test_simulated_replay_expiries_include_next_business_day_and_next_friday():
+    assert _simulated_replay_expiries(date(2026, 6, 5)) == [
+        date(2026, 6, 8),
+        date(2026, 6, 12),
+    ]
 
 
 def test_gap_up_candidate_gets_call_bias_when_regime_not_bearish():
