@@ -11,10 +11,14 @@ def dashboard_html() -> str:
   <style>
     :root { color-scheme: light; font-family: Arial, sans-serif; }
     body { margin: 0; background: #f6f7f9; color: #15181d; }
-    header { padding: 16px 22px; background: #111827; color: white; display: flex; justify-content: space-between; align-items: center; }
+    header { padding: 16px 22px; background: #111827; color: white; display: flex; justify-content: space-between; gap: 16px; align-items: center; }
     main { padding: 18px 22px 40px; max-width: 1280px; margin: 0 auto; }
+    .actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+    input { border: 1px solid #475569; background: #0f172a; color: white; border-radius: 6px; padding: 8px 10px; min-width: 220px; }
+    input::placeholder { color: #94a3b8; }
     button { border: 1px solid #c9ced6; background: white; border-radius: 6px; padding: 8px 11px; cursor: pointer; }
     button.primary { background: #2563eb; border-color: #2563eb; color: white; }
+    button.secondary { background: #0f172a; border-color: #475569; color: white; }
     .grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 14px 0; }
     .panel, .card { background: white; border: 1px solid #dde1e7; border-radius: 8px; padding: 14px; }
     .panel h2, .card h3 { margin: 0 0 10px; font-size: 16px; }
@@ -34,7 +38,12 @@ def dashboard_html() -> str:
 <body>
   <header>
     <strong>Schwab Market Scanner</strong>
-    <div><button class="primary" onclick="runScan()">Run Scan</button></div>
+    <div class="actions">
+      <input id="api-key" type="password" placeholder="API key">
+      <button class="secondary" onclick="load()">Refresh</button>
+      <button class="secondary" onclick="replayFriday()">Friday Replay</button>
+      <button class="primary" onclick="runScan()">Run Scan</button>
+    </div>
   </header>
   <main>
     <div class="grid">
@@ -52,29 +61,60 @@ def dashboard_html() -> str:
 async function fetchJson(url, opts) {
   const res = await fetch(url, opts || {});
   const text = await res.text();
-  try { return JSON.parse(text); } catch { return {status: res.status, body: text}; }
+  let data;
+  try { data = JSON.parse(text); } catch { data = {body: text}; }
+  return { ok: res.ok, status: res.status, data };
 }
 function money(v) { return v === null || v === undefined ? "" : Number(v).toFixed(2); }
 function pct(v) { return v === null || v === undefined ? "" : Number(v).toFixed(2) + "%"; }
 function list(items) { return (items || []).map(x => `<div>${x}</div>`).join(""); }
+function apiKey() { return document.getElementById("api-key").value.trim(); }
+function authOptions(method) {
+  const key = apiKey();
+  if (!key) {
+    document.getElementById("scan-meta").textContent = "Enter API key to run protected scans.";
+    return null;
+  }
+  return { method, headers: { "X-API-Key": key } };
+}
 async function load() {
-  const health = await fetchJson("/health");
+  const healthResult = await fetchJson("/health");
+  const health = healthResult.data;
   document.getElementById("health").innerHTML =
     `<div>Status: <b>${health.status}</b></div><div>Mode: ${health.config?.execution_mode}</div><div>Live gate: ${health.config?.live_gate_open}</div>`;
-  const schwab = await fetchJson("/schwab/status");
+  const schwabResult = await fetchJson("/schwab/status");
+  const schwab = schwabResult.data;
   document.getElementById("schwab").innerHTML =
     `<div>Status: <b>${schwab.status}</b></div><div>Ready: ${schwab.read_only_ready}</div><div>${list(schwab.notes)}</div>`;
   const latest = await fetchJson("/scan/latest");
-  renderScan(latest);
+  renderScan(latest.data);
 }
 async function runScan() {
-  document.getElementById("scan-meta").textContent = "Running scan...";
-  const result = await fetchJson("/scan/run", { method: "POST" });
-  renderScan(result);
+  const opts = authOptions("POST");
+  if (!opts) return;
+  document.getElementById("scan-meta").textContent = "Running live scan...";
+  const result = await fetchJson("/scan/run", opts);
+  renderProtectedResult(result);
+}
+async function replayFriday() {
+  const opts = authOptions("POST");
+  if (!opts) return;
+  document.getElementById("scan-meta").textContent = "Running Friday replay...";
+  const result = await fetchJson("/scan/replay?as_of=2026-06-05&save=true", opts);
+  renderProtectedResult(result);
+}
+function renderProtectedResult(result) {
+  if (!result.ok) {
+    const detail = result.data?.detail || result.data?.message || result.data?.body || `HTTP ${result.status}`;
+    document.getElementById("scan-meta").textContent = `Request failed: ${detail}`;
+    return;
+  }
+  renderScan(result.data);
 }
 function renderScan(scan) {
   if (!scan || !scan.scan_id) {
     document.getElementById("scan-meta").textContent = "No scan has been saved yet.";
+    document.getElementById("candidates").innerHTML = "";
     return;
   }
   document.getElementById("regime").innerHTML =
