@@ -146,78 +146,83 @@ def dashboard_html() -> str:
     .metric .value { margin-top: 7px; font-size: 18px; font-weight: 900; overflow-wrap: anywhere; }
     .proposal-card {
       border: 1px solid #bbf7d0;
-      border-left: 6px solid var(--green);
+      border-left: 4px solid var(--green);
       border-radius: 8px;
       background: var(--green-bg);
-      padding: 16px;
-      margin-top: 14px;
+      padding: 10px 12px;
+      margin-top: 9px;
     }
     .proposal-card.sim { border-color: #fed7aa; border-left-color: var(--amber); background: #fffaf0; }
-    .proposal-top { display: flex; align-items: start; justify-content: space-between; gap: 12px; }
-    .trade-labels { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-    .trade-number { display: inline-flex; align-items: center; min-height: 30px; border-radius: 7px; padding: 5px 11px; background: var(--green); color: white; font-size: 13px; font-weight: 900; }
+    .proposal-top { display: flex; align-items: start; justify-content: space-between; gap: 8px; }
+    .trade-labels { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+    .trade-number { display: inline-flex; align-items: center; min-height: 24px; border-radius: 6px; padding: 3px 8px; background: var(--green); color: white; font-size: 12px; font-weight: 900; }
     .proposal-card.sim .trade-number { background: var(--amber); }
     .trade-moneyness { font-size: 13px; }
-    .proposal-name { margin-top: 10px; font-weight: 900; font-size: 16px; }
-    .proposal-meta { margin-top: 5px; color: var(--muted); font-size: 13px; }
-    .proposal-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; margin-top: 14px; }
-    .qty-control { display: flex; gap: 9px; align-items: center; margin-top: 12px; flex-wrap: wrap; }
-    .qty-control .segment-button { min-width: 44px; }
-    .order-note { margin-top: 12px; color: var(--muted); line-height: 1.45; }
-    .legs { margin-top: 10px; display: grid; gap: 6px; }
+    .trade-moneyness .badge { min-height: 24px; padding: 3px 8px; font-size: 12px; }
+    .proposal-name { margin-top: 6px; font-weight: 900; font-size: 15px; }
+    .proposal-meta { margin-top: 3px; color: var(--muted); font-size: 12px; }
+    .proposal-card .metric { padding: 8px; }
+    .proposal-card .metric .value { margin-top: 4px; font-size: 16px; }
+    .proposal-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin-top: 8px; }
+    .qty-control { display: flex; gap: 6px; align-items: center; margin-top: 8px; flex-wrap: wrap; }
+    .qty-control .segment-button { min-width: 34px; padding: 6px 8px; }
+    .order-note { margin-top: 8px; color: var(--muted); line-height: 1.35; font-size: 12px; }
+    .legs { margin-top: 7px; display: grid; gap: 4px; }
     .leg {
       background: #e8edf5;
       color: var(--ink);
       border-radius: 6px;
-      padding: 10px 11px;
+      padding: 7px 9px;
       overflow-x: auto;
       white-space: pre;
       font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
-      font-size: 13px;
+      font-size: 12px;
     }
-    .tos-head, .exit-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 14px; }
-    .tos-actions, .exit-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+    .tos-head, .exit-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 9px; }
+    .tos-actions, .exit-actions { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
     .order-line {
-      margin-top: 10px;
+      margin-top: 7px;
       background: var(--navy);
       color: white;
       border-radius: 6px;
-      padding: 13px;
+      padding: 9px 10px;
       overflow-x: auto;
       white-space: pre;
       font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
-      font-size: 13px;
+      font-size: 12px;
     }
     .proposal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
-    .reasons { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 12px; }
-    .note-list { margin-top: 8px; color: var(--muted); font-size: 13px; line-height: 1.45; }
-    .exit-plan { border-top: 1px solid var(--line); margin-top: 16px; padding-top: 12px; }
-    .exit-targets { display: grid; gap: 8px; margin-top: 8px; }
-    .exit-target { font-weight: 900; }
+    .reasons { display: flex; gap: 5px; flex-wrap: wrap; margin-top: 8px; }
+    .proposal-card .reasons .badge { min-height: 22px; padding: 3px 7px; font-size: 11px; }
+    .note-list { margin-top: 6px; color: var(--muted); font-size: 12px; line-height: 1.35; }
+    .exit-plan { border-top: 1px solid var(--line); margin-top: 10px; padding-top: 8px; }
+    .exit-targets { display: grid; gap: 6px; margin-top: 6px; }
+    .exit-target { font-weight: 900; font-size: 12px; }
     .exit-order-line {
       display: block;
-      margin-top: 8px;
+      margin-top: 5px;
       background: #e5e7eb;
       border-radius: 6px;
-      padding: 10px 11px;
+      padding: 7px 9px;
       overflow-x: auto;
       white-space: pre;
       font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
-      font-size: 13px;
+      font-size: 12px;
       font-weight: 500;
     }
-    .accounts { border: 1px solid var(--line); border-radius: 8px; margin-top: 14px; background: rgba(255, 255, 255, 0.62); }
-    .accounts-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 11px; border-bottom: 1px solid var(--line-soft); }
-    .account-list { display: grid; gap: 8px; padding: 10px; }
+    .accounts { border: 1px solid var(--line); border-radius: 8px; margin-top: 9px; background: rgba(255, 255, 255, 0.62); }
+    .accounts-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 9px; border-bottom: 1px solid var(--line-soft); }
+    .account-list { display: grid; gap: 6px; padding: 8px; }
     .account-row {
       display: grid;
       grid-template-columns: auto 1fr auto;
-      gap: 10px;
+      gap: 8px;
       align-items: center;
       border: 1px solid var(--line);
       border-radius: 8px;
-      padding: 10px;
+      padding: 7px 9px;
       background: white;
+      font-size: 12px;
     }
     .account-row.disabled { background: var(--red-bg); border-color: #fecdd3; }
     .account-row input { min-width: 0; width: 18px; height: 18px; accent-color: var(--blue); }
@@ -251,7 +256,7 @@ def dashboard_html() -> str:
         <div class="sub" id="last-update">Loading...</div>
       </div>
       <div class="top-actions">
-        <input id="api-key" type="password" placeholder="API key">
+        <input id="api-key" type="password" placeholder="API key" onchange="persistApiKeyAndLoadAccounts()">
         <button class="ghost" onclick="load()">Refresh</button>
         <button class="good" onclick="replayFriday()">Friday Replay</button>
         <button class="primary" onclick="runScan()">Run Scan</button>
@@ -377,6 +382,8 @@ let appState = {
   selectedProposalIndex: 0,
   accounts: [],
   accountNotes: [],
+  accountsLoading: false,
+  accountsLoadedForKey: "",
   selectedAccountIds: new Set(),
   sendResponses: {},
   soundArmed: false,
@@ -522,6 +529,9 @@ async function load() {
   appState.schwab = schwabResult.data;
   appState.scan = scanResult.data && scanResult.data.scan_id ? scanResult.data : null;
   render();
+  if (apiKey()) {
+    await loadAccounts({ force: false });
+  }
 }
 
 async function runScan() {
@@ -941,6 +951,12 @@ function renderAccountRouting(proposal, index) {
       <div class="account-list"><div class="muted">API key required to load Schwab accounts.</div></div>
     </div>`;
   }
+  if (appState.accountsLoading) {
+    return `<div class="accounts">
+      <div class="accounts-head"><div class="label">Accounts to Send</div><button disabled>Loading...</button></div>
+      <div class="account-list"><div class="muted">Fetching Schwab accounts...</div></div>
+    </div>`;
+  }
   if (!accounts.length) {
     const notes = (appState.accountNotes || []).join(" ");
     return `<div class="accounts">
@@ -965,17 +981,46 @@ function renderAccountRouting(proposal, index) {
   </div>`;
 }
 
-async function loadAccounts() {
+async function persistApiKeyAndLoadAccounts() {
+  const key = apiKey();
+  if (!key) return;
+  localStorage.setItem("scannerApiKey", key);
+  await loadAccounts({ force: true });
+}
+
+async function loadAccounts(options = {}) {
+  const force = Boolean(options.force);
+  const key = apiKey();
+  if (!key) return;
+  if (appState.accountsLoading) return;
+  if (!force && appState.accountsLoadedForKey === key) return;
   const opts = authOptions("GET");
   if (!opts) return;
-  const result = await fetchJson("/accounts", opts);
+  appState.accountsLoading = true;
+  render();
+  let result;
+  try {
+    result = await fetchJson("/accounts", opts);
+  } catch (error) {
+    appState.accountNotes = [`Account fetch failed: ${error.message}`];
+    appState.accounts = [];
+    appState.accountsLoadedForKey = "";
+    appState.accountsLoading = false;
+    render();
+    return;
+  }
   if (!result.ok) {
     appState.accountNotes = [result.data?.detail || result.data?.body || `HTTP ${result.status}`];
+    appState.accounts = [];
+    appState.accountsLoadedForKey = "";
+    appState.accountsLoading = false;
     render();
     return;
   }
   appState.accounts = result.data.accounts || [];
   appState.accountNotes = result.data.notes || [];
+  appState.accountsLoadedForKey = key;
+  appState.accountsLoading = false;
   appState.selectedAccountIds = new Set(
     appState.accounts.filter(account => account.default_selected && account.enabled).map(account => account.id)
   );
