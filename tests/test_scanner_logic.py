@@ -1,14 +1,15 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from zoneinfo import ZoneInfo
 
-from nt_schwab_bridge.models import OptionProposal, OptionProposalLeg
+from nt_schwab_bridge.models import OptionContractSnapshot, OptionProposal, OptionProposalLeg
 
+from market_scanner.app import _is_simulated_proposal
 from market_scanner.config import _split_csv
 from market_scanner.models import Candle, MarketRegime, TickerMetrics
 from market_scanner.orders import schwab_order_payload
-from market_scanner.scanner import candidate_score, classify_candidate, compute_metrics
+from market_scanner.scanner import _signal_record, _simulated_fallback_proposals, candidate_score, classify_candidate, compute_metrics
 
 
 def test_symbol_splitter_accepts_commas_or_whitespace():
@@ -61,6 +62,34 @@ def test_replay_metrics_ignore_future_intraday_bars():
     assert metrics.gap_pct == 5
     assert metrics.premarket_high == 106
     assert metrics.today_high is None
+
+
+def test_simulated_fallback_proposal_is_marked_sim_only():
+    scanned_at = datetime(2026, 6, 5, 13, 29, tzinfo=timezone.utc)
+    metrics = TickerMetrics(symbol="AAPL", current_price=312.84)
+    record = _signal_record("AAPL", "long", metrics, scanned_at)
+    chain = [
+        OptionContractSnapshot(
+            symbol="AAPL",
+            broker_symbol="AAPL  260608C00315000",
+            expiry=date(2026, 6, 8),
+            strike=315,
+            right="CALL",
+            bid=2.1,
+            ask=2.35,
+            mark=2.25,
+            delta=0.42,
+            open_interest=0,
+            timestamp=datetime(2026, 6, 6, 20, 0, tzinfo=timezone.utc),
+        )
+    ]
+
+    proposals = _simulated_fallback_proposals(record, chain, metrics, scanned_at)
+
+    assert len(proposals) == 1
+    assert proposals[0].id.startswith("sim_")
+    assert "SIM_ONLY" in proposals[0].reasons
+    assert _is_simulated_proposal(proposals[0])
 
 
 def test_gap_up_candidate_gets_call_bias_when_regime_not_bearish():

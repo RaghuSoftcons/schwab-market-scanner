@@ -99,8 +99,8 @@ async function runScan() {
 async function replayFriday() {
   const opts = authOptions("POST");
   if (!opts) return;
-  document.getElementById("scan-meta").textContent = "Running Friday replay...";
-  const result = await fetchJson("/scan/replay?as_of=2026-06-05&save=true", opts);
+  document.getElementById("scan-meta").textContent = "Running Friday simulated replay...";
+  const result = await fetchJson("/scan/replay?as_of=2026-06-05&save=true&simulate_options=true", opts);
   renderProtectedResult(result);
 }
 function renderProtectedResult(result) {
@@ -125,6 +125,8 @@ function renderScan(scan) {
     const proposals = (c.proposals || []).map(p => `
       <div class="proposal">
         <div><span class="tag">${p.structure}</span> Score ${p.score} | Max loss $${money(p.max_loss)} | Send ${money(p.send_limit_price)}</div>
+        <div class="warn">${list(p.reasons)}</div>
+        <div class="muted">${list(p.notes)}</div>
         <pre>${p.tos_order_line}</pre>
       </div>`).join("");
     return `<tr>

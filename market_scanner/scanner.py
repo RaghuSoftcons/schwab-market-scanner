@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import hashlib
 from datetime import date, datetime, time, timezone
+from typing import Literal, Sequence
 from zoneinfo import ZoneInfo
 
 from nt_schwab_bridge.config import OptionPlannerConfig
-from nt_schwab_bridge.models import SignalPayload, SignalRecord
+from nt_schwab_bridge.models import OptionContractSnapshot, OptionProposal, OptionProposalLeg, OptionRight, SignalPayload, SignalRecord
 from nt_schwab_bridge.planner import OptionProposalPlanner
 from nt_schwab_bridge.schwab_adapter import SchwabApiError, SchwabOptionChainProvider
 
@@ -23,6 +24,9 @@ from market_scanner.models import (
     TickerMetrics,
 )
 from market_scanner.schwab_ext import SchwabEquityDataClient
+
+
+ProposalMode = Literal["live", "skip", "simulate"]
 
 
 class MarketScanner:
@@ -46,9 +50,11 @@ class MarketScanner:
         *,
         use_live_quotes: bool = True,
         include_options: bool = True,
+        simulate_options: bool = False,
         notes: list[str] | None = None,
     ) -> ScanResult:
         scanned_at = _utc(as_of or datetime.now(timezone.utc))
+        proposal_mode: ProposalMode = "simulate" if simulate_options else ("live" if include_options else "skip")
         all_symbols = list(dict.fromkeys([*self.settings.scanner.regime_symbols, *self.settings.scanner.symbols]))
         quotes = self._safe_quotes(all_symbols) if use_live_quotes else {}
         metrics_by_symbol = {
@@ -57,7 +63,7 @@ class MarketScanner:
         }
         regime = self._market_regime(metrics_by_symbol)
         candidates = [
-            self._candidate(symbol, metrics_by_symbol[symbol], regime, scanned_at, include_options=include_options)
+            self._candidate(symbol, metrics_by_symbol[symbol], regime, scanned_at, proposal_mode=proposal_mode)
             for symbol in self.settings.scanner.symbols
         ]
         ranked = sorted(candidates, key=lambda item: item.score, reverse=True)
@@ -142,7 +148,7 @@ class MarketScanner:
         metrics: TickerMetrics,
         regime: MarketRegime,
         scanned_at: datetime,
-        include_options: bool = True,
+        proposal_mode: ProposalMode = "live",
     ) -> ScannerCandidate:
         action, direction, reasons, warnings = classify_candidate(
             metrics,
@@ -154,8 +160,14 @@ class MarketScanner:
         score = candidate_score(metrics, action, regime)
         proposals = []
         blocked: list[str] = []
-        if direction in {"long", "short"} and not include_options:
+        if direction in {"long", "short"} and proposal_mode == "skip":
             blocked = ["option_proposals_skipped_for_historical_replay"]
+        elif direction in {"long", "short"} and proposal_mode == "simulate":
+            try:
+                record = _signal_record(symbol, direction, metrics, scanned_at)
+                proposals, blocked = self._simulated_option_proposals(record, metrics, scanned_at)
+            except (SchwabApiError, RuntimeError) as exc:
+                blocked = [f"simulated_proposal_generation_error:{exc.__class__.__name__}:{str(exc)[:120]}"]
         elif direction in {"long", "short"}:
             try:
                 record = _signal_record(symbol, direction, metrics, scanned_at)
@@ -178,6 +190,25 @@ class MarketScanner:
             proposals=proposals,
             proposal_blocked_reasons=blocked,
         )
+
+    def _simulated_option_proposals(
+        self,
+        record: SignalRecord,
+        metrics: TickerMetrics,
+        scanned_at: datetime,
+    ) -> tuple[list[OptionProposal], list[str]]:
+        chain = list(self.option_provider(record))
+        planner = OptionProposalPlanner(_simulated_planner_config(self.planner_config))
+        result = planner.plan(record, chain, scanned_at, underlying_price=metrics.current_price)
+        proposals = [_mark_simulated_proposal(proposal) for proposal in result.proposals]
+        blocked = list(result.blocked_reasons)
+        if proposals:
+            return proposals, blocked
+        fallback = _simulated_fallback_proposals(record, chain, metrics, scanned_at)
+        if fallback:
+            blocked.append("simulated_fallback_after_planner_filters")
+            return fallback, list(dict.fromkeys(blocked))
+        return [], list(dict.fromkeys([*blocked, "no_simulated_proposals_from_current_chain"]))
 
 
 def compute_metrics(
@@ -362,6 +393,162 @@ def _signal_record(symbol: str, direction: str, metrics: TickerMetrics, scanned_
     )
 
 
+def _simulated_planner_config(config: OptionPlannerConfig) -> OptionPlannerConfig:
+    target_delta = dict(config.target_delta_long)
+    for label in ("0DTE", "1DTE", "2DTE", "3DTE", "THIS_FRIDAY", "NEXT_WEEK_FRIDAY"):
+        target_delta[label] = [0.0, 1.0]
+    return config.model_copy(
+        deep=True,
+        update={
+            "quote_stale_after_seconds": 0,
+            "min_open_interest": 0,
+            "max_bid_ask_spread_percent": 10_000,
+            "allow_in_the_money_primary": True,
+            "min_debit_per_trade": 0,
+            "max_debit_per_trade": max(config.max_debit_per_trade, 5_000),
+            "target_delta_long": target_delta,
+        },
+    )
+
+
+def _mark_simulated_proposal(proposal: OptionProposal) -> OptionProposal:
+    return proposal.model_copy(
+        update={
+            "id": f"sim_{proposal.id}",
+            "reasons": list(
+                dict.fromkeys(
+                    [
+                        "SIM_ONLY",
+                        "historical_equity_replay",
+                        "current_option_chain_contract_data",
+                        *proposal.reasons,
+                    ]
+                )
+            ),
+            "notes": list(
+                dict.fromkeys(
+                    [
+                        "SIMULATION ONLY - blocked from Schwab order submission.",
+                        "Uses replayed underlying price with current Schwab option-chain contract data.",
+                        *proposal.notes,
+                    ]
+                )
+            ),
+            "price_protection": f"SIM ONLY - {proposal.price_protection}".strip(),
+        },
+    )
+
+
+def _simulated_fallback_proposals(
+    record: SignalRecord,
+    chain: Sequence[OptionContractSnapshot],
+    metrics: TickerMetrics,
+    scanned_at: datetime,
+) -> list[OptionProposal]:
+    right: OptionRight = "CALL" if record.payload.direction == "long" else "PUT"
+    underlying = metrics.current_price or record.payload.underlying_price
+    candidates = [
+        contract
+        for contract in chain
+        if contract.right == right and _contract_entry_price(contract) is not None
+    ]
+    if not candidates:
+        return []
+
+    if underlying is None:
+        contract = min(candidates, key=lambda item: (item.expiry, item.strike))
+    else:
+        contract = min(
+            candidates,
+            key=lambda item: (
+                item.expiry,
+                0
+                if (item.right == "CALL" and item.strike >= underlying)
+                or (item.right == "PUT" and item.strike <= underlying)
+                else 1,
+                abs(item.strike - underlying),
+                item.strike if item.right == "CALL" else -item.strike,
+            ),
+        )
+
+    entry_price = _contract_entry_price(contract)
+    if entry_price is None:
+        return []
+    quantity = 1
+    debit = round(entry_price * 100 * quantity, 2)
+    leg = OptionProposalLeg(
+        action="BUY",
+        qty=quantity,
+        symbol=contract.symbol,
+        broker_symbol=contract.broker_symbol,
+        expiry=contract.expiry,
+        strike=contract.strike,
+        right=contract.right,
+        price=entry_price,
+        bid=contract.bid,
+        ask=contract.ask,
+        mark=contract.mark,
+        delta=contract.delta,
+        open_interest=contract.open_interest,
+        volume=contract.volume,
+    )
+    proposal_id_basis = "|".join(
+        [
+            record.id,
+            "sim_fallback_single",
+            contract.symbol,
+            contract.expiry.isoformat(),
+            f"{contract.strike:g}",
+            contract.right,
+        ]
+    )
+    proposal_id = f"sim_prop_{hashlib.sha256(proposal_id_basis.encode('utf-8')).hexdigest()[:12]}"
+    return [
+        OptionProposal(
+            id=proposal_id,
+            signal_id=record.id,
+            symbol=contract.symbol,
+            direction=record.payload.direction,
+            structure="single",
+            created_at=scanned_at,
+            expiry=contract.expiry,
+            quantity=quantity,
+            underlying_price=underlying,
+            legs=[leg],
+            debit=debit,
+            max_loss=debit,
+            natural_limit_price=entry_price,
+            natural_debit=debit,
+            send_limit_price=entry_price,
+            price_protection="SIM ONLY - replay proposal, not eligible for Schwab order submission.",
+            net_delta=contract.delta,
+            score=0,
+            tos_order_line=_sim_tos_order_line(contract, quantity, entry_price),
+            reasons=["SIM_ONLY", "historical_equity_replay", "simulated_fallback_single"],
+            notes=[
+                "SIMULATION ONLY - blocked from Schwab order submission.",
+                "Fallback used nearest current option-chain contract to Friday replay underlying price.",
+                f"Current-chain quote timestamp: {contract.timestamp.isoformat()}",
+            ],
+        )
+    ]
+
+
+def _contract_entry_price(contract: OptionContractSnapshot) -> float | None:
+    for value in (contract.ask, contract.mark, contract.last):
+        if value is not None and value > 0:
+            return round(float(value), 2)
+    return None
+
+
+def _sim_tos_order_line(contract: OptionContractSnapshot, quantity: int, limit_price: float) -> str:
+    return (
+        f"SIM ONLY BUY +{quantity} SINGLE {contract.symbol.upper()} 100 "
+        f"{contract.expiry.strftime('%d %b %y').upper()} {_format_strike(contract.strike)} "
+        f"{contract.right} @{limit_price:.2f} LMT"
+    )
+
+
 def _target_intraday_date(candles: list[Candle], preferred: date, tz: ZoneInfo) -> date | None:
     dates = [candle.timestamp.astimezone(tz).date() for candle in candles]
     if not dates:
@@ -405,3 +592,7 @@ def _utc(value: datetime) -> datetime:
 
 def _round(value: float | int | None, places: int = 4) -> float | None:
     return None if value is None else round(float(value), places)
+
+
+def _format_strike(strike: float) -> str:
+    return str(int(strike)) if float(strike).is_integer() else str(strike)

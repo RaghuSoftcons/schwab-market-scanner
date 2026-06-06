@@ -141,18 +141,27 @@ async def replay_scan(
     ] = None,
     save: bool = True,
     include_options: bool = False,
+    simulate_options: bool = False,
 ) -> ScanResult:
     replay_as_of = _parse_replay_as_of(as_of)
-    option_note = (
-        "Historical replay used current Schwab option-chain data because include_options=true."
-        if include_options
-        else "Historical replay skipped option proposals because Schwab option-chain data is current, not a historical snapshot."
-    )
+    if simulate_options:
+        option_note = (
+            "Historical replay generated SIM_ONLY proposals from Friday underlying prices and current Schwab "
+            "option-chain contract data."
+        )
+    elif include_options:
+        option_note = "Historical replay used current Schwab option-chain data because include_options=true."
+    else:
+        option_note = (
+            "Historical replay skipped option proposals because Schwab option-chain data is current, not a "
+            "historical snapshot."
+        )
     result = await asyncio.to_thread(
         scanner.scan,
         replay_as_of,
         use_live_quotes=False,
         include_options=include_options,
+        simulate_options=simulate_options,
         notes=[
             f"Historical replay as of {replay_as_of.isoformat()}; live quotes ignored.",
             option_note,
@@ -181,6 +190,18 @@ async def send_proposal(
     proposal = storage.find_proposal(proposal_id)
     if proposal is None:
         raise HTTPException(status_code=404, detail="Proposal not found in latest scan.")
+    if _is_simulated_proposal(proposal):
+        response = SendProposalResponse(
+            status="blocked",
+            proposal_id=proposal_id,
+            selected_account_ids=list(dict.fromkeys(request.selected_account_ids)),
+            notes=[
+                "SIM_ONLY historical replay proposals are blocked from Schwab order submission.",
+                "Run a current live scan during market/options hours for orderable proposal payloads.",
+            ],
+        )
+        storage.append_order_event(response.model_dump(mode="json"))
+        return response
 
     selected_ids = list(dict.fromkeys(request.selected_account_ids))
     accounts, account_notes = discover_schwab_accounts(_bridge_config())
@@ -310,6 +331,10 @@ def _send_note(status: str) -> str:
     if status == "dry_run":
         return "Order payloads were prepared only; live execution gates are not all open."
     return "No Schwab order was submitted. Review account-level reasons."
+
+
+def _is_simulated_proposal(proposal) -> bool:
+    return proposal.id.startswith("sim_") or "SIM_ONLY" in set(proposal.reasons)
 
 
 def _parse_replay_as_of(value: str | None) -> datetime:
