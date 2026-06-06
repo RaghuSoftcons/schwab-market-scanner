@@ -154,8 +154,10 @@ def dashboard_html() -> str:
     }
     .proposal-card.sim { border-color: #fed7aa; border-left-color: var(--amber); background: #fffaf0; }
     .proposal-top { display: flex; align-items: start; justify-content: space-between; gap: 12px; }
+    .trade-labels { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
     .trade-number { display: inline-flex; align-items: center; min-height: 30px; border-radius: 7px; padding: 5px 11px; background: var(--green); color: white; font-size: 13px; font-weight: 900; }
     .proposal-card.sim .trade-number { background: var(--amber); }
+    .trade-moneyness { font-size: 13px; }
     .proposal-name { margin-top: 10px; font-weight: 900; font-size: 16px; }
     .proposal-meta { margin-top: 5px; color: var(--muted); font-size: 13px; }
     .proposal-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; margin-top: 14px; }
@@ -711,6 +713,12 @@ function proposalMoneyness(proposal) {
   return itm ? "ITM" : "OTM";
 }
 
+function moneynessTone(value) {
+  if (value === "ITM") return "green";
+  if (value === "OTM") return "gray";
+  return "";
+}
+
 function proposalUnitLimit(proposal) {
   const natural = Number(proposal?.natural_limit_price || 0);
   const selectedOffset = Number(appState.settings.entryOffsetCents || 0) / 100;
@@ -869,10 +877,11 @@ function proposalCard(rawProposal, index) {
   const legs = (proposal.legs || []).map(leg => `<div class="leg">${esc(proposalLegText(leg))}</div>`).join("");
   const entryLimit = proposalEntryLimitText(proposal);
   const active = index === appState.selectedProposalIndex;
+  const moneyness = proposalMoneyness(proposal);
   return `<article class="proposal-card ${sim ? "sim" : ""}" id="proposal-${index}">
     <div class="proposal-top">
       <div>
-        <div class="trade-number">Trade #${index + 1}</div>
+        <div class="trade-labels"><div class="trade-number">Trade #${index + 1}</div><span class="trade-moneyness">${badge(moneyness, moneynessTone(moneyness))}</span></div>
         <div class="proposal-name">${esc(proposalTitle(proposal))}</div>
         <div class="proposal-meta">${esc(proposalMetaText(proposal))}${active ? " | selected" : ""}</div>
         ${renderQuantityControl(proposal)}

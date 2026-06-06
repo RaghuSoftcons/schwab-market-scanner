@@ -22,5 +22,6 @@ def test_dashboard_contains_reference_proposal_controls() -> None:
         "ITM",
         "ATM",
         "OTM",
+        "trade-moneyness",
     ]:
         assert text in response.text
