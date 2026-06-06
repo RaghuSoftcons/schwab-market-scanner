@@ -15,7 +15,7 @@ def dashboard_html() -> str:
       --bg: #f3f6fa;
       --panel: #ffffff;
       --ink: #111827;
-      --muted: #64748b;
+      --muted: #657188;
       --line: #dbe3ed;
       --line-soft: #edf1f6;
       --blue: #2563eb;
@@ -26,6 +26,7 @@ def dashboard_html() -> str:
       --red: #a51616;
       --red-bg: #fff1f2;
       --navy: #111827;
+      --slate-bg: #f8fafc;
     }
     * { box-sizing: border-box; }
     body { margin: 0; background: var(--bg); color: var(--ink); }
@@ -37,10 +38,13 @@ def dashboard_html() -> str:
       padding: 9px 13px;
       cursor: pointer;
       box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+      color: var(--ink);
     }
-    button.primary { background: var(--blue); border-color: var(--blue); color: white; font-weight: 700; }
+    button.primary { background: var(--blue); border-color: var(--blue); color: white; font-weight: 800; }
     button.good { background: var(--green-bg); border-color: #bbf7d0; color: var(--green); font-weight: 800; }
+    button.danger { background: var(--red-bg); border-color: #fecdd3; color: var(--red); font-weight: 800; }
     button.ghost { background: #f8fafc; }
+    button.sound { background: var(--green-bg); border-color: #bbf7d0; color: var(--green); font-weight: 900; }
     button:disabled { cursor: not-allowed; color: #94a3b8; background: #f8fafc; }
     input {
       border: 1px solid var(--line);
@@ -49,18 +53,19 @@ def dashboard_html() -> str:
       padding: 9px 11px;
       min-width: 230px;
     }
-    .page { max-width: 1840px; margin: 0 auto; padding: 22px; }
+    .page { max-width: 1880px; margin: 0 auto; padding: 22px; }
     .topbar { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin-bottom: 18px; }
     .title h1 { margin: 0; font-size: 23px; line-height: 1.1; letter-spacing: 0; }
     .title .sub { margin-top: 6px; color: var(--muted); font-size: 14px; }
     .top-actions { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; justify-content: flex-end; }
-    .layout { display: grid; grid-template-columns: minmax(520px, 0.9fr) minmax(620px, 1.1fr); gap: 14px; align-items: start; }
+    .layout { display: grid; grid-template-columns: minmax(540px, 0.92fr) minmax(720px, 1.08fr); gap: 14px; align-items: start; }
     .panel {
       background: var(--panel);
       border: 1px solid var(--line);
       border-radius: 8px;
       box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
     }
+    .panel + .panel { margin-top: 12px; }
     .panel-head {
       display: flex;
       align-items: center;
@@ -70,14 +75,14 @@ def dashboard_html() -> str:
       border-bottom: 1px solid var(--line-soft);
     }
     .panel-head h2 { margin: 0; font-size: 16px; }
+    .panel-title { font-size: 16px; font-weight: 900; }
     .panel-body { padding: 14px 15px; }
     .kpis { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; margin-bottom: 12px; }
     .kpi { min-height: 82px; padding: 12px; background: white; border: 1px solid var(--line); border-radius: 8px; }
-    .kpi .label { color: var(--muted); font-size: 12px; text-transform: uppercase; }
-    .kpi .value { margin-top: 8px; font-size: 18px; font-weight: 800; overflow-wrap: anywhere; }
+    .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0; }
+    .kpi .value { margin-top: 8px; font-size: 18px; font-weight: 900; overflow-wrap: anywhere; }
     .state-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; padding-top: 12px; border-top: 1px solid var(--line-soft); }
-    .state .label { color: var(--muted); font-size: 12px; text-transform: uppercase; }
-    .state .value { margin-top: 5px; font-weight: 800; }
+    .state .value { margin-top: 5px; font-weight: 900; overflow-wrap: anywhere; }
     .badges { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
     .badge {
       display: inline-flex;
@@ -86,16 +91,19 @@ def dashboard_html() -> str:
       border-radius: 999px;
       padding: 5px 10px;
       font-size: 13px;
-      font-weight: 800;
+      font-weight: 900;
       background: #eef2ff;
       color: #1d4ed8;
       border: 1px solid #dbeafe;
+      white-space: nowrap;
     }
     .badge.green { background: var(--green-bg); color: var(--green); border-color: #bbf7d0; }
     .badge.amber { background: var(--amber-bg); color: var(--amber); border-color: #fed7aa; }
     .badge.red { background: var(--red-bg); color: var(--red); border-color: #fecdd3; }
     .badge.gray { background: #f8fafc; color: #475569; border-color: var(--line); }
     .notice { border-left: 4px solid var(--amber); background: #fff7ed; padding: 12px 14px; border-radius: 7px; color: #7c3f06; line-height: 1.45; }
+    .notice.green { border-left-color: var(--green); background: var(--green-bg); color: #14532d; }
+    .notice.red { border-left-color: var(--red); background: var(--red-bg); color: var(--red); }
     .table-wrap { overflow-x: auto; }
     table { width: 100%; border-collapse: collapse; table-layout: fixed; }
     th, td { text-align: left; padding: 11px 10px; border-bottom: 1px solid var(--line-soft); vertical-align: top; font-size: 14px; }
@@ -109,54 +117,127 @@ def dashboard_html() -> str:
     .bad-text { color: var(--red); }
     .warn-text { color: var(--amber); }
     .right-panel { position: sticky; top: 14px; }
-    .proposal-toolbar { display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: start; }
+    .proposal-toolbar { display: grid; grid-template-columns: minmax(180px, 1fr) minmax(620px, auto); gap: 12px; align-items: start; }
     .proposal-title h2 { margin: 0 0 5px; font-size: 16px; }
-    .proposal-controls { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
-    .candidate-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin: 14px 0; }
-    .metric { border: 1px solid var(--line); border-radius: 8px; padding: 11px; background: #fbfdff; }
-    .metric .label { color: var(--muted); font-size: 12px; text-transform: uppercase; }
-    .metric .value { margin-top: 7px; font-size: 18px; font-weight: 900; }
+    .proposal-controls { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; align-items: center; }
+    .proposal-settings { display: inline-flex; gap: 8px; align-items: center; flex-wrap: nowrap; }
+    .setting-label { color: var(--muted); font-size: 12px; font-weight: 900; text-transform: uppercase; }
+    .segmented { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: white; }
+    .segment-button {
+      border: 0;
+      border-right: 1px solid var(--line);
+      border-radius: 0;
+      box-shadow: none;
+      min-width: 58px;
+      padding: 9px 11px;
+      background: white;
+      font-weight: 800;
+    }
+    .segment-button:last-child { border-right: 0; }
+    .segment-button.active { background: var(--green-bg); color: var(--green); }
+    .checkbox-setting { display: inline-flex; align-items: center; gap: 7px; font-weight: 900; }
+    .checkbox-setting input { min-width: 0; width: 20px; height: 20px; accent-color: var(--green); }
+    .target-inputs { display: inline-flex; gap: 6px; }
+    .target-inputs input { min-width: 0; width: 64px; font-weight: 900; text-align: center; }
+    .moneyness-strip { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+    .candidate-summary, .freshness { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin: 14px 0; }
+    .freshness { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .metric { border: 1px solid var(--line); border-radius: 8px; padding: 11px; background: #fbfdff; min-width: 0; }
+    .metric .value { margin-top: 7px; font-size: 18px; font-weight: 900; overflow-wrap: anywhere; }
     .proposal-card {
       border: 1px solid #bbf7d0;
       border-left: 6px solid var(--green);
       border-radius: 8px;
       background: var(--green-bg);
-      padding: 14px;
-      margin-top: 12px;
+      padding: 16px;
+      margin-top: 14px;
     }
     .proposal-card.sim { border-color: #fed7aa; border-left-color: var(--amber); background: #fffaf0; }
     .proposal-top { display: flex; align-items: start; justify-content: space-between; gap: 12px; }
-    .proposal-name { font-weight: 900; font-size: 16px; }
-    .proposal-meta { margin-top: 4px; color: var(--muted); font-size: 13px; }
-    .proposal-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; margin-top: 12px; }
-    .order-line {
-      margin-top: 10px;
-      background: var(--navy);
-      color: white;
+    .trade-number { display: inline-flex; align-items: center; min-height: 30px; border-radius: 7px; padding: 5px 11px; background: var(--green); color: white; font-size: 13px; font-weight: 900; }
+    .proposal-card.sim .trade-number { background: var(--amber); }
+    .proposal-name { margin-top: 10px; font-weight: 900; font-size: 16px; }
+    .proposal-meta { margin-top: 5px; color: var(--muted); font-size: 13px; }
+    .proposal-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; margin-top: 14px; }
+    .qty-control { display: flex; gap: 9px; align-items: center; margin-top: 12px; flex-wrap: wrap; }
+    .qty-control .segment-button { min-width: 44px; }
+    .order-note { margin-top: 12px; color: var(--muted); line-height: 1.45; }
+    .legs { margin-top: 10px; display: grid; gap: 6px; }
+    .leg {
+      background: #e8edf5;
+      color: var(--ink);
       border-radius: 6px;
-      padding: 12px;
+      padding: 10px 11px;
       overflow-x: auto;
       white-space: pre;
       font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
       font-size: 13px;
     }
-    .proposal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
-    .reasons { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
+    .tos-head, .exit-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 14px; }
+    .tos-actions, .exit-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+    .order-line {
+      margin-top: 10px;
+      background: var(--navy);
+      color: white;
+      border-radius: 6px;
+      padding: 13px;
+      overflow-x: auto;
+      white-space: pre;
+      font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+      font-size: 13px;
+    }
+    .proposal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+    .reasons { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 12px; }
     .note-list { margin-top: 8px; color: var(--muted); font-size: 13px; line-height: 1.45; }
+    .exit-plan { border-top: 1px solid var(--line); margin-top: 16px; padding-top: 12px; }
+    .exit-targets { display: grid; gap: 8px; margin-top: 8px; }
+    .exit-target { font-weight: 900; }
+    .exit-order-line {
+      display: block;
+      margin-top: 8px;
+      background: #e5e7eb;
+      border-radius: 6px;
+      padding: 10px 11px;
+      overflow-x: auto;
+      white-space: pre;
+      font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+      font-size: 13px;
+      font-weight: 500;
+    }
+    .accounts { border: 1px solid var(--line); border-radius: 8px; margin-top: 14px; background: rgba(255, 255, 255, 0.62); }
+    .accounts-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 11px; border-bottom: 1px solid var(--line-soft); }
+    .account-list { display: grid; gap: 8px; padding: 10px; }
+    .account-row {
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      gap: 10px;
+      align-items: center;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px;
+      background: white;
+    }
+    .account-row.disabled { background: var(--red-bg); border-color: #fecdd3; }
+    .account-row input { min-width: 0; width: 18px; height: 18px; accent-color: var(--blue); }
+    .send-status { margin-top: 8px; font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
     .empty { padding: 24px; color: var(--muted); text-align: center; border: 1px dashed var(--line); border-radius: 8px; background: #fbfdff; }
-    @media (max-width: 1180px) {
+    @media (max-width: 1280px) {
       .layout { grid-template-columns: 1fr; }
       .right-panel { position: static; }
       .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .proposal-toolbar { grid-template-columns: 1fr; }
+      .proposal-controls { justify-content: flex-start; }
     }
     @media (max-width: 760px) {
       .page { padding: 14px; }
-      .topbar, .proposal-toolbar { align-items: stretch; flex-direction: column; display: flex; }
+      .topbar { align-items: stretch; flex-direction: column; }
       .top-actions, .proposal-controls { justify-content: stretch; }
       .top-actions > *, .proposal-controls > * { flex: 1 1 auto; }
       input { min-width: 0; width: 100%; }
-      .state-grid, .candidate-summary, .proposal-stats { grid-template-columns: 1fr; }
+      .state-grid, .candidate-summary, .proposal-stats, .freshness { grid-template-columns: 1fr; }
       .kpis { grid-template-columns: 1fr; }
+      .account-row { grid-template-columns: auto 1fr; }
+      .account-row .badge { grid-column: 1 / -1; }
     }
   </style>
 </head>
@@ -200,7 +281,7 @@ def dashboard_html() -> str:
           </div>
         </section>
 
-        <section class="panel" style="margin-top: 12px;">
+        <section class="panel">
           <div class="panel-head">
             <h2>Top Candidates</h2>
             <div class="muted" id="candidate-count">0 shown</div>
@@ -233,12 +314,43 @@ def dashboard_html() -> str:
             <div class="muted" id="proposal-subtitle">Select a candidate.</div>
           </div>
           <div class="proposal-controls">
-            <button class="ghost" onclick="copySelectedTos()">Copy TOS</button>
-            <button class="ghost" disabled id="send-button">Send disabled</button>
+            <span class="muted" id="proposal-status">ready</span>
+            <span class="proposal-settings" aria-label="Expiry settings">
+              <span class="setting-label">Expiry</span>
+              <span class="segmented" id="expiry-buttons" role="group" aria-label="Proposal expiry"></span>
+            </span>
+            <span class="proposal-settings" aria-label="Moneyness settings">
+              <label class="checkbox-setting"><input id="allow-itm-checkbox" type="checkbox" onchange="setAllowItm(this.checked)">ITM</label>
+            </span>
+            <span class="proposal-settings" aria-label="Max loss settings">
+              <span class="setting-label">Max Loss</span>
+              <span class="segmented" id="max-loss-buttons" role="group" aria-label="Proposal max loss"></span>
+            </span>
+            <span class="proposal-settings" aria-label="Entry offset settings">
+              <span class="setting-label">Entry +</span>
+              <span class="segmented" id="entry-offset-buttons" role="group" aria-label="Proposal entry offset"></span>
+            </span>
+            <span class="proposal-settings" aria-label="Target settings">
+              <span class="setting-label">Targets</span>
+              <span class="target-inputs" id="target-inputs" role="group" aria-label="Proposal targets"></span>
+              <button class="ghost" onclick="applyTargets()">Apply</button>
+            </span>
+            <button class="sound" onclick="soundReady()">Sound Ready</button>
+            <button class="ghost" onclick="testSound()">Test Sound</button>
+            <button class="ghost" onclick="showFirstProposal()">Show Proposal</button>
+            <button class="ghost" disabled>Mark Reviewed</button>
+            <button class="ghost" onclick="load()">Refresh Proposal</button>
           </div>
         </div>
         <div class="panel-body">
+          <div class="moneyness-strip">
+            <span class="setting-label">Moneyness</span>
+            <span class="badge green">ITM</span>
+            <span class="badge">ATM</span>
+            <span class="badge gray">OTM</span>
+          </div>
           <div id="proposal-notice" class="notice">Loading scanner state...</div>
+          <div class="freshness" id="quote-freshness"></div>
           <div class="candidate-summary">
             <div class="metric"><div class="label">Underlying</div><div class="value" id="metric-underlying">...</div></div>
             <div class="metric"><div class="label">Gap</div><div class="value" id="metric-gap">...</div></div>
@@ -252,7 +364,31 @@ def dashboard_html() -> str:
   </main>
 
 <script>
-let appState = { health: null, schwab: null, scan: null, selectedSymbol: null, currentProposals: [] };
+const MAX_PROPOSAL_QUANTITY = 10;
+let appState = {
+  health: null,
+  schwab: null,
+  scan: null,
+  selectedSymbol: null,
+  currentProposals: [],
+  quantities: {},
+  selectedProposalIndex: 0,
+  accounts: [],
+  accountNotes: [],
+  selectedAccountIds: new Set(),
+  sendResponses: {},
+  soundArmed: false,
+  settings: {
+    expiry: "NEXT_WEEK_FRIDAY",
+    expiryChoices: ["0DTE", "1DTE", "2DTE", "3DTE", "THIS_FRIDAY", "NEXT_WEEK_FRIDAY"],
+    allowItm: true,
+    maxLoss: 300,
+    maxLossChoices: [200, 300, 400, 500],
+    entryOffsetCents: 10,
+    entryOffsetChoices: [10, 20, 30, 40, 50],
+    targets: [25, 50, 60]
+  }
+};
 
 function byId(id) { return document.getElementById(id); }
 function esc(value) {
@@ -260,13 +396,14 @@ function esc(value) {
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
   }[ch]));
 }
-function money(value) { return value === null || value === undefined ? "--" : "$" + Number(value).toFixed(2); }
-function plainMoney(value) { return value === null || value === undefined ? "--" : Number(value).toFixed(2); }
-function pct(value) { return value === null || value === undefined ? "--" : Number(value).toFixed(2) + "%"; }
+function money(value) { return value === null || value === undefined || Number.isNaN(Number(value)) ? "--" : "$" + Number(value).toFixed(2); }
+function plainMoney(value) { return value === null || value === undefined || Number.isNaN(Number(value)) ? "--" : Number(value).toFixed(2); }
+function pct(value) { return value === null || value === undefined || Number.isNaN(Number(value)) ? "--" : Number(value).toFixed(2) + "%"; }
 function intFmt(value) { return value === null || value === undefined ? "0" : Number(value).toLocaleString(); }
 function shortTime(value) {
   if (!value) return "No scan";
-  return new Date(value).toLocaleString();
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString();
 }
 function badge(text, tone) {
   return `<span class="badge ${tone || ""}">${esc(text)}</span>`;
@@ -283,6 +420,8 @@ function isSimProposal(proposal) {
 }
 function apiKey() { return byId("api-key").value.trim(); }
 function setStatus(text) { byId("last-update").textContent = text; }
+function activeConfig() { return appState.health?.config || {}; }
+function liveGateOpen() { return Boolean(activeConfig().live_gate_open); }
 
 async function fetchJson(url, opts) {
   const res = await fetch(url, opts || {});
@@ -292,17 +431,83 @@ async function fetchJson(url, opts) {
   return { ok: res.ok, status: res.status, data };
 }
 
-function authOptions(method) {
+function authOptions(method, body) {
   const key = apiKey();
   if (!key) {
-    byId("proposal-notice").textContent = "Enter API key to run protected scans.";
+    byId("proposal-notice").textContent = "Enter API key to run protected actions.";
     return null;
   }
   localStorage.setItem("scannerApiKey", key);
-  return { method, headers: { "X-API-Key": key } };
+  const opts = { method, headers: { "X-API-Key": key } };
+  if (body !== undefined) {
+    opts.headers["Content-Type"] = "application/json";
+    opts.body = JSON.stringify(body);
+  }
+  return opts;
+}
+
+function loadDashboardSettings() {
+  try {
+    const raw = localStorage.getItem("scannerDashboardSettings");
+    if (!raw) return;
+    const saved = JSON.parse(raw);
+    appState.settings = { ...appState.settings, ...saved };
+  } catch {
+    return;
+  }
+}
+function saveDashboardSettings() {
+  localStorage.setItem("scannerDashboardSettings", JSON.stringify(appState.settings));
+}
+
+function renderSetupControls() {
+  const settings = appState.settings;
+  byId("expiry-buttons").innerHTML = settings.expiryChoices.map(choice => {
+    const label = choice === "THIS_FRIDAY" ? "This Fri" : choice === "NEXT_WEEK_FRIDAY" ? "Next Fri" : choice;
+    return `<button class="segment-button ${choice === settings.expiry ? "active" : ""}" type="button" onclick="setExpiry('${esc(choice)}')">${esc(label)}</button>`;
+  }).join("");
+  byId("allow-itm-checkbox").checked = Boolean(settings.allowItm);
+  byId("max-loss-buttons").innerHTML = settings.maxLossChoices.map(choice => (
+    `<button class="segment-button ${choice === settings.maxLoss ? "active" : ""}" type="button" onclick="setMaxLoss(${choice})">$${choice}</button>`
+  )).join("");
+  byId("entry-offset-buttons").innerHTML = settings.entryOffsetChoices.map(choice => (
+    `<button class="segment-button ${choice === settings.entryOffsetCents ? "active" : ""}" type="button" onclick="setEntryOffset(${choice})">+${choice}c</button>`
+  )).join("");
+  byId("target-inputs").innerHTML = settings.targets.map((target, index) => (
+    `<input id="target-${index}" inputmode="numeric" value="${esc(target)}" aria-label="Target ${index + 1} percent">`
+  )).join("");
+}
+
+function setExpiry(value) {
+  appState.settings.expiry = value;
+  saveDashboardSettings();
+  render();
+}
+function setMaxLoss(value) {
+  appState.settings.maxLoss = Number(value);
+  saveDashboardSettings();
+  render();
+}
+function setEntryOffset(value) {
+  appState.settings.entryOffsetCents = Number(value);
+  saveDashboardSettings();
+  render();
+}
+function setAllowItm(value) {
+  appState.settings.allowItm = Boolean(value);
+  saveDashboardSettings();
+  render();
+}
+function applyTargets() {
+  const next = [0, 1, 2].map(index => Number(byId(`target-${index}`)?.value || 0)).filter(value => value > 0);
+  appState.settings.targets = next.length ? next : [25, 50, 60];
+  saveDashboardSettings();
+  render();
 }
 
 async function load() {
+  loadDashboardSettings();
+  renderSetupControls();
   const savedKey = localStorage.getItem("scannerApiKey") || "";
   if (savedKey && !byId("api-key").value) byId("api-key").value = savedKey;
 
@@ -337,6 +542,7 @@ function renderProtectedResult(result) {
   if (!result.ok) {
     const detail = result.data?.detail || result.data?.message || result.data?.body || `HTTP ${result.status}`;
     byId("proposal-notice").textContent = `Request failed: ${detail}`;
+    byId("proposal-status").textContent = "request failed";
     setStatus("Request failed");
     return;
   }
@@ -345,6 +551,7 @@ function renderProtectedResult(result) {
 }
 
 function render() {
+  renderSetupControls();
   const health = appState.health || {};
   const config = health.config || {};
   const schwab = appState.schwab || {};
@@ -357,19 +564,19 @@ function render() {
   byId("kpi-regime").textContent = scan?.regime?.bias || "...";
   byId("kpi-proposals").textContent = String(proposals.length);
 
-  const liveGate = Boolean(config.live_gate_open);
   const hasSim = proposals.some(isSimProposal);
   byId("state-badges").innerHTML = [
     badge((config.execution_mode || "dry_run").toUpperCase(), config.execution_mode === "live" ? "red" : "gray"),
-    badge(liveGate ? "LIVE GATE ON" : "LIVE GATE OFF", liveGate ? "red" : "green"),
+    badge(config.live_gate_open ? "LIVE GATE ON" : "LIVE GATE OFF", config.live_gate_open ? "red" : "green"),
     badge(schwab.read_only_ready ? "SCHWAB DATA READY" : "SCHWAB DATA WAITING", schwab.read_only_ready ? "green" : "amber"),
     hasSim ? badge("SIM PROPOSALS", "amber") : badge("CURRENT PROPOSALS", "green"),
+    badge(appState.settings.allowItm ? "ITM ALLOWED" : "ATM/OTM ONLY", appState.settings.allowItm ? "green" : "gray"),
   ].join("");
 
   byId("state-scan").textContent = scan?.scan_id || "No scan";
   byId("state-universe").textContent = (scan?.universe || config.symbols || []).join(", ") || "...";
   byId("state-session").textContent = scan?.session || "...";
-  byId("state-safety").textContent = liveGate ? "Live Enabled" : "Protected";
+  byId("state-safety").textContent = config.live_gate_open ? "Live Enabled" : "Protected";
   byId("candidate-count").textContent = `${(scan?.top_candidates || []).length} shown`;
   setStatus(`Last update: ${shortTime(scan?.scanned_at || health.latest_scan_at)}`);
 
@@ -394,7 +601,8 @@ function candidateRow(candidate) {
   const selected = candidate.symbol === appState.selectedSymbol ? " selected" : "";
   const proposals = candidateProposals(candidate);
   const tone = candidate.action === "CALL_BIAS" ? "green" : candidate.action === "PUT_BIAS" ? "amber" : "gray";
-  return `<tr class="candidate-row${selected}" onclick="selectCandidate('${esc(candidate.symbol)}')">
+  const selectedAttr = esc(candidate.symbol).replace(/'/g, "\\'");
+  return `<tr class="candidate-row${selected}" onclick="selectCandidate('${selectedAttr}')">
     <td><div class="sym">${esc(candidate.symbol)}</div><div class="tiny">rank ${candidate.rank || ""}</div></td>
     <td>${badge(candidate.action || "WATCH", tone)}</td>
     <td>${plainMoney(metrics.current_price)}</td>
@@ -407,14 +615,18 @@ function candidateRow(candidate) {
 
 function selectCandidate(symbol) {
   appState.selectedSymbol = symbol;
+  appState.selectedProposalIndex = 0;
   render();
 }
 
 function renderProposal(candidate) {
   if (!candidate) {
     byId("proposal-subtitle").textContent = "No candidate selected.";
+    byId("proposal-status").textContent = "no proposal";
+    byId("proposal-notice").className = "notice";
     byId("proposal-notice").textContent = "Run a scan or Friday replay to populate proposals.";
     byId("proposal-cards").innerHTML = `<div class="empty">No proposal selected.</div>`;
+    renderQuoteFreshness([]);
     setMetrics(null);
     return;
   }
@@ -422,12 +634,16 @@ function renderProposal(candidate) {
   const proposals = candidateProposals(candidate);
   appState.currentProposals = proposals;
   const sim = proposals.some(isSimProposal);
-  byId("proposal-subtitle").textContent = `${candidate.symbol} ${candidate.action} | ${proposals.length} proposal${proposals.length === 1 ? "" : "s"}`;
+  const moneyness = proposals.map(proposalMoneyness).filter(Boolean);
+  const uniqueMoneyness = Array.from(new Set(moneyness)).join(", ") || "ATM/OTM";
+  byId("proposal-subtitle").textContent = `${candidate.symbol} ${candidate.action} | ${proposals.length} proposal${proposals.length === 1 ? "" : "s"} | ${uniqueMoneyness}`;
+  byId("proposal-status").textContent = proposals.length ? "ready" : "blocked";
+  byId("proposal-notice").className = sim ? "notice" : "notice green";
   byId("proposal-notice").textContent = sim
     ? "SIM ONLY: replayed Friday underlying prices with current Schwab option-chain contract data. Order sending is blocked."
-    : "Current scanner proposals remain protected by dry-run/live execution gates.";
+    : "Access token is present for read-only market-data calls. Schwab order placement remains controlled by scanner execution gates.";
   setMetrics(metrics);
-  byId("send-button").textContent = sim ? "SIM blocked" : "Send gated";
+  renderQuoteFreshness(proposals);
   byId("proposal-cards").innerHTML = proposals.length
     ? proposals.map((proposal, index) => proposalCard(proposal, index)).join("")
     : `<div class="empty">${esc((candidate.proposal_blocked_reasons || ["No proposals for this candidate."]).join(" | "))}</div>`;
@@ -440,49 +656,446 @@ function setMetrics(metrics) {
   byId("metric-prev-high").textContent = plainMoney(metrics?.previous_high);
 }
 
-function proposalCard(proposal, index) {
+function renderQuoteFreshness(proposals) {
+  const proposalList = proposals || [];
+  const times = proposalList.flatMap(proposalQuoteTimes).filter(date => date && !Number.isNaN(date.getTime()));
+  const now = new Date();
+  const freshest = times.length ? new Date(Math.max(...times.map(date => date.getTime()))) : null;
+  const ageSeconds = freshest ? Math.max(0, Math.round((now.getTime() - freshest.getTime()) / 1000)) : null;
+  const hasSim = proposalList.some(isSimProposal);
+  const staleCount = freshest && ageSeconds > 300 ? proposalList.length : 0;
+  const status = !proposalList.length ? "NOT CHECKED" : hasSim ? "SIM CURRENT CHAIN" : staleCount ? "STALE" : "FRESH";
+  const tone = status === "FRESH" ? "green" : status === "STALE" ? "red" : "amber";
+  byId("quote-freshness").innerHTML = `
+    <div class="metric"><div class="label">Quote Freshness</div><div class="value">${badge(status, tone)}</div></div>
+    <div class="metric"><div class="label">Freshest Quote</div><div class="value">${freshest ? esc(freshest.toLocaleString()) : "--"}</div></div>
+    <div class="metric"><div class="label">Quote Age</div><div class="value">${ageSeconds === null ? "--" : formatAge(ageSeconds)} / ${staleCount} of ${proposalList.length} stale</div></div>`;
+}
+
+function proposalQuoteTimes(proposal) {
+  const times = [];
+  (proposal.legs || []).forEach(leg => {
+    ["timestamp", "quote_time", "last_quote_time"].forEach(key => {
+      if (leg[key]) times.push(new Date(leg[key]));
+    });
+  });
+  (proposal.notes || []).forEach(note => {
+    const match = String(note).match(/timestamp:\\s*([^\\s]+)/i);
+    if (match) times.push(new Date(match[1]));
+  });
+  if (!times.length && proposal.created_at) times.push(new Date(proposal.created_at));
+  return times;
+}
+
+function formatAge(seconds) {
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ${seconds % 60}s`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h ${minutes % 60}m`;
+}
+
+function primaryLeg(proposal) {
+  return (proposal.legs || []).find(leg => leg.action === "BUY") || (proposal.legs || [])[0] || {};
+}
+
+function proposalMoneyness(proposal) {
+  const leg = primaryLeg(proposal);
+  const underlying = Number(proposal?.underlying_price);
+  const strike = Number(leg?.strike);
+  const right = String(leg?.right || "").toUpperCase();
+  if (!underlying || !strike || !right) return "ATM/OTM";
+  const tolerance = Math.max(0.5, Math.abs(underlying) * 0.0035);
+  if (Math.abs(underlying - strike) <= tolerance) return "ATM";
+  const itm = right === "CALL" ? underlying > strike : underlying < strike;
+  return itm ? "ITM" : "OTM";
+}
+
+function proposalUnitLimit(proposal) {
+  const natural = Number(proposal?.natural_limit_price || 0);
+  const selectedOffset = Number(appState.settings.entryOffsetCents || 0) / 100;
+  if (natural > 0) return roundMoney(natural + selectedOffset);
+  const sendLimit = Number(proposal?.send_limit_price || 0);
+  if (sendLimit > 0) return sendLimit;
+  const quantity = Number(proposal?.quantity || 0);
+  const debit = Number(proposal?.debit || 0);
+  if (quantity > 0 && debit > 0) return roundMoney(debit / (quantity * 100));
+  return Number(primaryLeg(proposal).ask || primaryLeg(proposal).price || 0);
+}
+
+function selectedProposalQuantity(proposal) {
+  const saved = Number(appState.quantities[proposal.id] || proposal.quantity || 1);
+  return Math.max(1, Math.min(MAX_PROPOSAL_QUANTITY, saved));
+}
+
+function roundMoney(value) {
+  return Math.round(Number(value || 0) * 100) / 100;
+}
+
+function formatTosStrike(strike) {
+  const value = Number(strike || 0);
+  return Number.isInteger(value) ? String(value) : String(strike);
+}
+
+function formatTosExpiry(expiry) {
+  const parts = String(expiry || "").split("-").map(part => Number(part));
+  const months = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
+  if (parts.length !== 3 || parts.some(part => Number.isNaN(part))) return String(expiry || "");
+  return `${String(parts[2]).padStart(2, "0")} ${months[Math.max(0, Math.min(11, parts[1] - 1))]} ${String(parts[0]).slice(-2)}`;
+}
+
+function tosOrderLine(proposal, quantity, limitPrice) {
+  const legs = proposal.legs || [];
+  if (!legs.length) return proposal.tos_order_line || "";
+  const structure = proposal.structure === "debit_vertical" ? "VERTICAL" : "SINGLE";
+  const strikes = legs.map(leg => formatTosStrike(leg.strike)).join("/");
+  const right = legs[0]?.right || "CALL";
+  const prefix = isSimProposal(proposal) ? "SIM ONLY " : "";
+  return `${prefix}BUY +${quantity} ${structure} ${String(proposal.symbol || "").toUpperCase()} 100 ${formatTosExpiry(proposal.expiry)} ${strikes} ${right} @${Number(limitPrice || 0).toFixed(2)} LMT`;
+}
+
+function tosExitOrderLine(proposal, quantity, limitPrice) {
+  const legs = proposal.legs || [];
+  if (!legs.length) return "";
+  const structure = proposal.structure === "debit_vertical" ? "VERTICAL" : "SINGLE";
+  const strikes = legs.map(leg => formatTosStrike(leg.strike)).join("/");
+  const right = legs[0]?.right || "CALL";
+  return `SELL -${quantity} ${structure} ${String(proposal.symbol || "").toUpperCase()} 100 ${formatTosExpiry(proposal.expiry)} ${strikes} ${right} @${Number(limitPrice || 0).toFixed(2)} LMT GTC`;
+}
+
+function adjustedProposalForQuantity(rawProposal) {
+  const quantity = selectedProposalQuantity(rawProposal);
+  const unitLimit = proposalUnitLimit(rawProposal);
+  const natural = Number(rawProposal.natural_limit_price || unitLimit || 0);
+  const debit = roundMoney(unitLimit * 100 * quantity);
+  const naturalDebit = roundMoney(natural * 100 * quantity);
+  const legs = (rawProposal.legs || []).map(leg => ({ ...leg, qty: quantity }));
+  return {
+    ...rawProposal,
+    quantity,
+    legs,
+    debit,
+    max_loss: debit,
+    natural_debit: naturalDebit,
+    send_limit_price: unitLimit,
+    tos_order_line: tosOrderLine({ ...rawProposal, legs }, quantity, unitLimit),
+    exit_targets: proposalExitTargets({ ...rawProposal, legs }, quantity, unitLimit)
+  };
+}
+
+function proposalExitTargets(proposal, quantity, entryLimit) {
+  const existing = Array.isArray(proposal.exit_targets) ? proposal.exit_targets : [];
+  if (existing.length) {
+    return existing.map(target => ({
+      ...target,
+      tos_exit_order_line: target.tos_exit_order_line || tosExitOrderLine(proposal, Number(target.qty || 1), Number(target.target_limit_price || entryLimit)),
+    }));
+  }
+  let remaining = quantity;
+  return appState.settings.targets.slice(0, Math.min(3, quantity)).map((percent, index, targets) => {
+    const qty = index === targets.length - 1 ? remaining : 1;
+    remaining -= qty;
+    let targetLimit = roundMoney(Number(entryLimit || 0) * (1 + Number(percent || 0) / 100));
+    if (proposal.structure === "debit_vertical" && Number(proposal.width || 0) > 0) {
+      targetLimit = Math.min(targetLimit, Number(proposal.width));
+    }
+    return {
+      qty,
+      target_percent: percent,
+      target_limit_price: targetLimit,
+      estimated_profit: Math.max(0, roundMoney((targetLimit - Number(entryLimit || 0)) * 100 * qty)),
+      tos_exit_order_line: tosExitOrderLine(proposal, qty, targetLimit)
+    };
+  });
+}
+
+function renderQuantityControl(proposal) {
+  const selected = selectedProposalQuantity(proposal);
+  const buttons = Array.from({ length: MAX_PROPOSAL_QUANTITY }, (_value, index) => index + 1).map(quantity => (
+    `<button class="segment-button ${quantity === selected ? "active" : ""}" type="button" onclick="setProposalQuantity('${esc(proposal.id)}', ${quantity})">${quantity}</button>`
+  )).join("");
+  return `<div class="qty-control"><span class="label">Qty</span><span class="segmented">${buttons}</span></div>`;
+}
+
+function setProposalQuantity(proposalId, quantity) {
+  appState.quantities[proposalId] = Number(quantity);
+  render();
+}
+
+function proposalTitle(proposal) {
+  const legs = proposal.legs || [];
+  if (!legs.length) return proposal.structure || "proposal";
+  return legs.map(leg => `${leg.action} ${leg.qty} ${leg.symbol} ${leg.expiry} ${formatTosStrike(leg.strike)}${leg.right === "CALL" ? "C" : "P"}`).join(" / ");
+}
+
+function proposalMetaText(proposal) {
+  const parts = [];
+  parts.push(proposalMoneyness(proposal));
+  parts.push(proposal.structure || "proposal");
+  parts.push(`expiry ${proposal.expiry || "--"}`);
+  if (proposal.underlying_price != null) parts.push(`underlying ${Number(proposal.underlying_price).toFixed(2)}`);
+  parts.push(`score ${Number(proposal.score || 0).toFixed(2)}`);
+  return parts.join(" | ");
+}
+
+function proposalLegText(leg) {
+  const side = leg.right === "CALL" ? "C" : "P";
+  const price = Number(leg.price || leg.ask || leg.mark || 0).toFixed(2);
+  return `${leg.action} ${leg.qty} ${leg.symbol} ${leg.expiry} ${formatTosStrike(leg.strike)}${side} @ ${price} | Open Int ${intFmt(leg.open_interest)} | Volume ${intFmt(leg.volume)}`;
+}
+
+function proposalEntryLimitText(proposal) {
+  const natural = Number(proposal.natural_limit_price || 0);
+  const naturalDebit = Number(proposal.natural_debit || 0);
+  const sendLimit = Number(proposal.send_limit_price || 0);
+  const label = proposal.structure === "single" ? "Ask" : "Natural debit";
+  const parts = [];
+  if (natural > 0) parts.push(`${label}: ${natural.toFixed(2)}`);
+  if (naturalDebit > 0) parts.push(`Natural max: $${naturalDebit.toFixed(2)}`);
+  if (sendLimit > 0) parts.push(`Send Limit: ${sendLimit.toFixed(2)}`);
+  if (natural > 0) parts.push(`Marketable limit: natural ${natural.toFixed(2)} + ${(Number(appState.settings.entryOffsetCents || 0) / 100).toFixed(2)}`);
+  if (proposal.price_protection) parts.push(proposal.price_protection);
+  return parts.join(" | ");
+}
+
+function proposalExecutionBadge(proposal) {
+  if (isSimProposal(proposal)) return badge("SIM ONLY", "amber");
+  return liveGateOpen() ? badge("LIVE READY", "red") : badge("DRY RUN", "green");
+}
+
+function proposalCard(rawProposal, index) {
+  const proposal = adjustedProposalForQuantity(rawProposal);
   const sim = isSimProposal(proposal);
-  const leg = (proposal.legs || [])[0] || {};
-  const heading = `${proposal.direction?.toUpperCase() || ""} ${proposal.quantity || 1} ${proposal.symbol} ${proposal.expiry || ""} ${leg.strike || ""}${leg.right ? " " + leg.right : ""}`;
-  return `<article class="proposal-card ${sim ? "sim" : ""}">
+  const legs = (proposal.legs || []).map(leg => `<div class="leg">${esc(proposalLegText(leg))}</div>`).join("");
+  const entryLimit = proposalEntryLimitText(proposal);
+  const active = index === appState.selectedProposalIndex;
+  return `<article class="proposal-card ${sim ? "sim" : ""}" id="proposal-${index}">
     <div class="proposal-top">
       <div>
-        <div class="badges">${badge(`Trade #${index + 1}`, sim ? "amber" : "green")} ${badge(proposal.structure || "proposal", "gray")} ${sim ? badge("SIM ONLY", "amber") : badge("DRY RUN", "green")}</div>
-        <div class="proposal-name">${esc(heading)}</div>
-        <div class="proposal-meta">score ${plainMoney(proposal.score)} | ${proposal.structure || ""} | expiry ${esc(proposal.expiry || "")}</div>
+        <div class="trade-number">Trade #${index + 1}</div>
+        <div class="proposal-name">${esc(proposalTitle(proposal))}</div>
+        <div class="proposal-meta">${esc(proposalMetaText(proposal))}${active ? " | selected" : ""}</div>
+        ${renderQuantityControl(proposal)}
       </div>
+      ${proposalExecutionBadge(proposal)}
     </div>
     <div class="proposal-stats">
       <div class="metric"><div class="label">Underlying</div><div class="value">${plainMoney(proposal.underlying_price)}</div></div>
       <div class="metric"><div class="label">Debit</div><div class="value">${money(proposal.debit)}</div></div>
       <div class="metric"><div class="label">Max Loss</div><div class="value">${money(proposal.max_loss)}</div></div>
     </div>
+    ${entryLimit ? `<div class="order-note"><span class="label">Entry Limit</span> ${esc(entryLimit)}</div>` : ""}
+    <div class="legs">${legs}</div>
     <div class="reasons">${reasonBadges(proposal.reasons, sim ? "amber" : "green")}</div>
     <div class="note-list">${(proposal.notes || []).map(note => `<div>${esc(note)}</div>`).join("")}</div>
-    <div class="order-line" id="tos-${index}">${esc(proposal.tos_order_line || "")}</div>
-    <div class="proposal-actions">
-      <button onclick="copyProposalTos(${index})">Copy TOS</button>
-      <button disabled>${sim ? "Send blocked" : "Send gated"}</button>
+    <div class="tos-head">
+      <div class="label">TOS Format - TOS Order Entry</div>
+      <div class="tos-actions">
+        <button onclick="copyProposalTos(${index})">Copy TOS</button>
+        <button class="${sim ? "" : "good"}" onclick="sendProposal(${index})" ${sim ? "disabled" : ""}>${sim ? "Send blocked" : "Send to Schwab"}</button>
+      </div>
     </div>
+    <div class="order-line" id="tos-${index}">${esc(proposal.tos_order_line || "")}</div>
+    ${renderExitPlan(proposal, index)}
+    ${renderAccountRouting(proposal, index)}
+    <div class="send-status" data-send-status-for="${esc(proposal.id)}">${esc(sendStatusText(appState.sendResponses[proposal.id]))}</div>
   </article>`;
 }
 
+function renderExitPlan(proposal, cardIndex) {
+  const targets = Array.isArray(proposal.exit_targets) ? proposal.exit_targets : [];
+  if (!targets.length) return "";
+  const rows = targets.map((target, index) => {
+    const qty = Number(target.qty || 1);
+    const percent = Number(target.target_percent || 0);
+    const limit = Number(target.target_limit_price || 0);
+    const profit = Number(target.estimated_profit || 0);
+    const sellLine = target.tos_exit_order_line || tosExitOrderLine(proposal, qty, limit);
+    return `<div class="exit-target">
+      ${esc(`${qty} @ +${percent.toLocaleString(undefined, { maximumFractionDigits: 4 })}% -> ${limit.toFixed(2)} | est +$${profit.toFixed(2)}`)}
+      <span class="exit-order-line" id="exit-line-${cardIndex}-${index}">${esc(sellLine)}</span>
+      <div class="exit-actions"><button onclick="copyText(byId('exit-line-${cardIndex}-${index}').textContent)">Copy SELL</button><button disabled>Get fill first</button></div>
+    </div>`;
+  }).join("");
+  return `<div class="exit-plan">
+    <div class="exit-row"><div><span class="label">Exit Plan</span> <span class="warn-text">target exits not sent yet</span></div><button disabled>Get Order Info</button></div>
+    <div class="order-note">Entry order fill has not been checked yet.</div>
+    <div class="exit-targets">${rows}</div>
+  </div>`;
+}
+
+function renderAccountRouting(proposal, index) {
+  const accounts = appState.accounts || [];
+  if (!apiKey()) {
+    return `<div class="accounts">
+      <div class="accounts-head"><div class="label">Accounts to Send</div><button onclick="loadAccounts()">Load Accounts</button></div>
+      <div class="account-list"><div class="muted">API key required to load Schwab accounts.</div></div>
+    </div>`;
+  }
+  if (!accounts.length) {
+    const notes = (appState.accountNotes || []).join(" ");
+    return `<div class="accounts">
+      <div class="accounts-head"><div class="label">Accounts to Send</div><button onclick="loadAccounts()">Load Accounts</button></div>
+      <div class="account-list"><div class="muted">${esc(notes || "No accounts loaded yet.")}</div></div>
+    </div>`;
+  }
+  const rows = accounts.map(account => {
+    const disabled = !account.enabled || (proposal.structure === "debit_vertical" && !account.supports_spreads);
+    const selected = appState.selectedAccountIds.has(account.id) || (!appState.selectedAccountIds.size && account.default_selected);
+    const spread = account.supports_spreads ? "spread ok" : "single-leg only";
+    const configured = account.order_configured ? "order hash set" : "order hash missing";
+    return `<label class="account-row ${disabled ? "disabled" : ""}">
+      <input type="checkbox" data-account-id="${esc(account.id)}" onchange="toggleAccount(this)" ${selected && !disabled ? "checked" : ""} ${disabled ? "disabled" : ""}>
+      <span><strong>${esc(account.account_number || account.id)} (${esc(account.label || account.id)})</strong> <span class="muted">${esc(account.account_type || "account")} | ${spread} | ${configured} | ${esc(account.source || "discovered")}</span></span>
+      ${disabled ? badge("Blocked", "red") : badge("Ready", "green")}
+    </label>`;
+  }).join("");
+  return `<div class="accounts">
+    <div class="accounts-head"><div class="label">Accounts to Send</div><button onclick="loadAccounts()">Refresh Accounts</button></div>
+    <div class="account-list">${rows}</div>
+  </div>`;
+}
+
+async function loadAccounts() {
+  const opts = authOptions("GET");
+  if (!opts) return;
+  const result = await fetchJson("/accounts", opts);
+  if (!result.ok) {
+    appState.accountNotes = [result.data?.detail || result.data?.body || `HTTP ${result.status}`];
+    render();
+    return;
+  }
+  appState.accounts = result.data.accounts || [];
+  appState.accountNotes = result.data.notes || [];
+  appState.selectedAccountIds = new Set(
+    appState.accounts.filter(account => account.default_selected && account.enabled).map(account => account.id)
+  );
+  render();
+}
+
+function toggleAccount(checkbox) {
+  const id = checkbox.dataset.accountId || "";
+  if (!id) return;
+  if (checkbox.checked) appState.selectedAccountIds.add(id);
+  else appState.selectedAccountIds.delete(id);
+}
+
+async function sendProposal(index) {
+  const rawProposal = appState.currentProposals[index];
+  if (!rawProposal) return;
+  const proposal = adjustedProposalForQuantity(rawProposal);
+  const sim = isSimProposal(proposal);
+  const status = document.querySelector(`[data-send-status-for="${CSS.escape(proposal.id)}"]`);
+  if (sim) {
+    if (status) status.textContent = "SIM_ONLY proposals are blocked from Schwab order submission.";
+    return;
+  }
+  const optsBase = authOptions("POST", {});
+  if (!optsBase) return;
+  const selectedIds = Array.from(appState.selectedAccountIds);
+  if (!selectedIds.length) {
+    if (!appState.accounts.length) await loadAccounts();
+    if (status) status.textContent = "Select at least one Schwab account before sending.";
+    return;
+  }
+  let confirmLiveOrder = false;
+  if (liveGateOpen()) {
+    confirmLiveOrder = window.confirm(`Submit LIVE Schwab order?\\n\\n${proposal.tos_order_line}\\nAccounts: ${selectedIds.join(", ")}\\nMax loss: ${money(proposal.max_loss)}\\n\\nOnly continue if this is exactly the trade you want.`);
+    if (!confirmLiveOrder) {
+      if (status) status.textContent = "Live order cancelled before submission.";
+      return;
+    }
+  }
+  if (status) status.textContent = "Checking selected accounts...";
+  const body = {
+    selected_account_ids: selectedIds,
+    confirm_live_order: confirmLiveOrder,
+    quantity: proposal.quantity,
+    limit_price: proposal.send_limit_price,
+    order_note: `Schwab Market Scanner | ${proposal.symbol} ${proposal.direction || ""} | ${proposalMoneyness(proposal)}`
+  };
+  const opts = authOptions("POST", body);
+  const result = await fetchJson(`/proposals/${encodeURIComponent(proposal.id)}/send`, opts);
+  if (!result.ok) {
+    if (status) status.textContent = result.data?.detail || result.data?.body || `HTTP ${result.status}`;
+    return;
+  }
+  appState.sendResponses[proposal.id] = result.data;
+  if (Array.isArray(result.data.selected_account_ids)) {
+    appState.selectedAccountIds = new Set(result.data.selected_account_ids);
+  }
+  render();
+}
+
+function sendStatusText(response) {
+  if (!response) return "";
+  const results = response.account_results || [];
+  const notes = (response.notes || []).join(" ");
+  if (!results.length) return notes;
+  const accountText = results.map(item => {
+    const reasons = (item.reasons || []).join(", ") || item.status;
+    const broker = item.broker_order_id ? ` ${item.broker_order_id}` : "";
+    return `${item.account_label}: ${item.status}${broker} (${reasons})`;
+  }).join(" | ");
+  return `${accountText}${notes ? " | " + notes : ""}`;
+}
+
 async function copyText(text) {
-  if (!text) return;
-  await navigator.clipboard.writeText(text);
+  const value = String(text || "");
+  if (!value) return;
+  try {
+    await navigator.clipboard.writeText(value);
+  } catch {
+    const textarea = document.createElement("textarea");
+    textarea.value = value;
+    textarea.setAttribute("readonly", "");
+    textarea.style.position = "fixed";
+    textarea.style.left = "-9999px";
+    document.body.appendChild(textarea);
+    textarea.select();
+    document.execCommand("copy");
+    document.body.removeChild(textarea);
+  }
   setStatus("Copied TOS line");
 }
 
 function copyProposalTos(index) {
-  const proposal = appState.currentProposals[index];
+  const proposal = adjustedProposalForQuantity(appState.currentProposals[index]);
   if (proposal?.tos_order_line) copyText(proposal.tos_order_line);
 }
 
 function copySelectedTos() {
-  const scan = appState.scan;
-  const candidate = (scan?.top_candidates || []).find(item => item.symbol === appState.selectedSymbol);
-  const first = candidateProposals(candidate)[0];
-  if (first?.tos_order_line) copyText(first.tos_order_line);
+  const first = appState.currentProposals[appState.selectedProposalIndex] || appState.currentProposals[0];
+  if (first) copyProposalTos(appState.currentProposals.indexOf(first));
+}
+
+function showFirstProposal() {
+  const first = byId("proposal-0");
+  if (first) first.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function soundReady() {
+  appState.soundArmed = true;
+  byId("proposal-status").textContent = "sound ready";
+}
+
+function testSound() {
+  try {
+    const context = new (window.AudioContext || window.webkitAudioContext)();
+    const oscillator = context.createOscillator();
+    const gain = context.createGain();
+    oscillator.connect(gain);
+    gain.connect(context.destination);
+    oscillator.frequency.value = 880;
+    gain.gain.setValueAtTime(0.001, context.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.12, context.currentTime + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.001, context.currentTime + 0.22);
+    oscillator.start();
+    oscillator.stop(context.currentTime + 0.25);
+    byId("proposal-status").textContent = "sound tested";
+  } catch {
+    byId("proposal-status").textContent = "sound unavailable";
+  }
 }
 
 load();
