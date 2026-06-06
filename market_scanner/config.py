@@ -78,7 +78,7 @@ class ServiceSettings(BaseModel):
 
 
 class ScannerSettings(BaseModel):
-    symbols: list[str] = Field(default_factory=lambda: ["AAPL", "NVDA"])
+    symbols: list[str] = Field(default_factory=lambda: ["AAPL", "NVDA", "JPM"])
     regime_symbols: list[str] = Field(default_factory=lambda: ["SPY", "QQQ", "DIA"])
     top_n: int = Field(default=10, ge=1, le=100)
     interval_minutes: int = Field(default=30, ge=1, le=240)
@@ -192,7 +192,7 @@ def load_settings() -> SettingsLoadResult:
     )
     scanner_raw.update(
         {
-            "symbols": _split_csv(os.getenv("SCANNER_SYMBOLS", ""), scanner_raw.get("symbols", ["AAPL", "NVDA"])),
+            "symbols": _split_csv(os.getenv("SCANNER_SYMBOLS", ""), scanner_raw.get("symbols", ["AAPL", "NVDA", "JPM"])),
             "regime_symbols": _split_csv(
                 os.getenv("SCANNER_REGIME_SYMBOLS", ""),
                 scanner_raw.get("regime_symbols", ["SPY", "QQQ", "DIA"]),

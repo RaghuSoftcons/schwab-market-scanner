@@ -23,9 +23,10 @@ The deployed service is currently in dry-run mode with live order gates closed.
 
 - Scans market regime through `SPY`, `QQQ`, and `DIA`.
 - Scans a configured ticker universe every 30 minutes.
-- Starts with two Monday test tickers:
+- Starts with three Monday test tickers:
   - `AAPL`
   - `NVDA`
+  - `JPM` as a Dow component
 - Ranks candidates by gap, premarket volume, and regime fit.
 - Produces `CALL_BIAS`, `PUT_BIAS`, `WATCH`, or `AVOID`.
 - Pulls Schwab option chains and builds proposal cards when a candidate has directional bias.
@@ -106,7 +107,7 @@ SCANNER_TRADING_ENABLED=false
 Ticker universe:
 
 ```text
-SCANNER_SYMBOLS=AAPL,NVDA
+SCANNER_SYMBOLS=AAPL,NVDA,JPM
 SCANNER_REGIME_SYMBOLS=SPY,QQQ,DIA
 SCANNER_INTERVAL_MINUTES=30
 ```
