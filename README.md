@@ -118,6 +118,7 @@ SCANNER_INTERVAL_MINUTES=30
 - `GET /schwab/status`
 - `GET /accounts`
 - `POST /scan/run`
+- `POST /scan/replay`
 - `GET /scan/latest`
 - `POST /proposals/{proposal_id}/send`
 
@@ -126,6 +127,18 @@ Protected endpoints accept:
 ```text
 X-API-Key: <SCANNER_API_KEY>
 ```
+
+Replay Friday/current historical candles:
+
+```powershell
+Invoke-WebRequest -UseBasicParsing -Method Post `
+  "https://schwab-market-scanner-production.up.railway.app/scan/replay?as_of=2026-06-05&save=true" `
+  -Headers @{ "X-API-Key" = "<SCANNER_API_KEY>" }
+```
+
+If `as_of` is a date, the scanner replays that day at `09:29 America/New_York`.
+If `as_of` is omitted, it replays the most recent weekday at 09:29.
+Historical replay ignores live equity quotes and skips option proposals by default because Schwab option-chain data is current, not a true historical snapshot.
 
 ## Local Checks
 

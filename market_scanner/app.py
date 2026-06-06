@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import date as date_type
+from datetime import datetime, time, timedelta, timezone
 from typing import Annotated
+from zoneinfo import ZoneInfo
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.responses import HTMLResponse
 
 from nt_schwab_bridge.config import BridgeConfig, RiskConfig, ServiceConfig
@@ -127,6 +129,38 @@ async def run_scan(_: None = Depends(_require_api_key)) -> ScanResult:
     result = await asyncio.to_thread(scanner.scan)
     _rank_candidates(result)
     storage.save_scan(result)
+    return result
+
+
+@app.post("/scan/replay", response_model=ScanResult)
+async def replay_scan(
+    _: None = Depends(_require_api_key),
+    as_of: Annotated[
+        str | None,
+        Query(description="ISO datetime, or YYYY-MM-DD to replay that date at 09:29 New York time."),
+    ] = None,
+    save: bool = True,
+    include_options: bool = False,
+) -> ScanResult:
+    replay_as_of = _parse_replay_as_of(as_of)
+    option_note = (
+        "Historical replay used current Schwab option-chain data because include_options=true."
+        if include_options
+        else "Historical replay skipped option proposals because Schwab option-chain data is current, not a historical snapshot."
+    )
+    result = await asyncio.to_thread(
+        scanner.scan,
+        replay_as_of,
+        use_live_quotes=False,
+        include_options=include_options,
+        notes=[
+            f"Historical replay as of {replay_as_of.isoformat()}; live quotes ignored.",
+            option_note,
+        ],
+    )
+    _rank_candidates(result)
+    if save:
+        storage.save_scan(result)
     return result
 
 
@@ -276,3 +310,27 @@ def _send_note(status: str) -> str:
     if status == "dry_run":
         return "Order payloads were prepared only; live execution gates are not all open."
     return "No Schwab order was submitted. Review account-level reasons."
+
+
+def _parse_replay_as_of(value: str | None) -> datetime:
+    tz = ZoneInfo(settings.scanner.timezone)
+    if value is None or not value.strip():
+        replay_day = _previous_weekday(datetime.now(tz).date())
+        return datetime.combine(replay_day, time(9, 29), tzinfo=tz).astimezone(timezone.utc)
+
+    raw = value.strip()
+    if len(raw) == 10:
+        replay_day = date_type.fromisoformat(raw)
+        return datetime.combine(replay_day, time(9, 29), tzinfo=tz).astimezone(timezone.utc)
+
+    parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=tz)
+    return parsed.astimezone(timezone.utc)
+
+
+def _previous_weekday(day: date_type) -> date_type:
+    candidate = day - timedelta(days=1)
+    while candidate.weekday() >= 5:
+        candidate -= timedelta(days=1)
+    return candidate

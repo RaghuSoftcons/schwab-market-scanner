@@ -1,18 +1,66 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 from nt_schwab_bridge.models import OptionProposal, OptionProposalLeg
 
 from market_scanner.config import _split_csv
-from market_scanner.models import MarketRegime, TickerMetrics
+from market_scanner.models import Candle, MarketRegime, TickerMetrics
 from market_scanner.orders import schwab_order_payload
-from market_scanner.scanner import candidate_score, classify_candidate
+from market_scanner.scanner import candidate_score, classify_candidate, compute_metrics
 
 
 def test_symbol_splitter_accepts_commas_or_whitespace():
     assert _split_csv("AAPL,NVDA", ["SPY"]) == ["AAPL", "NVDA"]
     assert _split_csv("SPY QQQ DIA", ["AAPL"]) == ["SPY", "QQQ", "DIA"]
+
+
+def test_replay_metrics_ignore_future_intraday_bars():
+    tz = ZoneInfo("America/New_York")
+    as_of = datetime(2026, 6, 5, 9, 29, tzinfo=tz).astimezone(timezone.utc)
+    daily = [
+        Candle(
+            timestamp=datetime(2026, 6, 4, 16, 0, tzinfo=tz).astimezone(timezone.utc),
+            open=98,
+            high=101,
+            low=97,
+            close=100,
+            volume=1_000_000,
+        )
+    ]
+    intraday = [
+        Candle(
+            timestamp=datetime(2026, 6, 5, 9, 0, tzinfo=tz).astimezone(timezone.utc),
+            open=104,
+            high=106,
+            low=103,
+            close=105,
+            volume=50_000,
+        ),
+        Candle(
+            timestamp=datetime(2026, 6, 5, 15, 59, tzinfo=tz).astimezone(timezone.utc),
+            open=118,
+            high=121,
+            low=117,
+            close=120,
+            volume=500_000,
+        ),
+    ]
+
+    metrics = compute_metrics(
+        symbol="AAPL",
+        quote=None,
+        intraday=intraday,
+        daily=daily,
+        as_of=as_of,
+        timezone_name="America/New_York",
+    )
+
+    assert metrics.current_price == 105
+    assert metrics.gap_pct == 5
+    assert metrics.premarket_high == 106
+    assert metrics.today_high is None
 
 
 def test_gap_up_candidate_gets_call_bias_when_regime_not_bearish():
