@@ -1,0 +1,278 @@
+from __future__ import annotations
+
+import asyncio
+from contextlib import asynccontextmanager
+from datetime import datetime, timezone
+from typing import Annotated
+
+from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi.responses import HTMLResponse
+
+from nt_schwab_bridge.config import BridgeConfig, RiskConfig, ServiceConfig
+from nt_schwab_bridge.schwab_adapter import (
+    SchwabApiError,
+    SchwabMarketDataClient,
+    discover_schwab_accounts,
+    schwab_market_data_status,
+)
+
+from market_scanner.config import AppSettings, load_settings
+from market_scanner.dashboard import dashboard_html
+from market_scanner.models import AccountSendResult, ScanResult, SendProposalRequest, SendProposalResponse
+from market_scanner.orders import schwab_order_payload
+from market_scanner.scanner import MarketScanner
+from market_scanner.storage import ScannerStorage
+
+
+settings_load = load_settings()
+settings: AppSettings = settings_load.settings
+storage = ScannerStorage(settings.storage.path)
+scanner = MarketScanner(settings)
+_scheduler_task: asyncio.Task | None = None
+
+
+def _bridge_config() -> BridgeConfig:
+    return BridgeConfig(
+        service=ServiceConfig(
+            execution_mode=settings.service.execution_mode,
+            allow_live_orders=settings.service.allow_live_orders,
+        ),
+        risk=RiskConfig(trading_enabled=settings.service.trading_enabled),
+        options=settings.planner_config(),
+        schwab=settings.schwab,
+    )
+
+
+def _require_api_key(x_api_key: Annotated[str | None, Header()] = None) -> None:
+    expected = settings.service.api_key.strip()
+    if not expected:
+        return
+    if x_api_key != expected:
+        raise HTTPException(status_code=401, detail="Invalid or missing X-API-Key.")
+
+
+async def _scheduler_loop() -> None:
+    await asyncio.sleep(3)
+    while True:
+        try:
+            result = await asyncio.to_thread(scanner.scan)
+            _rank_candidates(result)
+            storage.save_scan(result)
+        except Exception:
+            pass
+        await asyncio.sleep(settings.scanner.interval_minutes * 60)
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    global _scheduler_task
+    _scheduler_task = asyncio.create_task(_scheduler_loop())
+    try:
+        yield
+    finally:
+        if _scheduler_task is not None:
+            _scheduler_task.cancel()
+
+
+app = FastAPI(title="Schwab Market Scanner", version="0.1.0", lifespan=lifespan)
+
+
+@app.get("/health")
+async def health() -> dict:
+    latest = storage.load_latest_scan()
+    return {
+        "status": "ok",
+        "service": "schwab-market-scanner",
+        "config_source": settings_load.source,
+        "config": settings.public_status(),
+        "latest_scan_id": latest.scan_id if latest else None,
+        "latest_scan_at": latest.scanned_at if latest else None,
+    }
+
+
+@app.get("/dashboard", response_class=HTMLResponse)
+async def dashboard() -> str:
+    return dashboard_html()
+
+
+@app.get("/schwab/status")
+async def schwab_status() -> dict:
+    return schwab_market_data_status(_bridge_config()).model_dump(mode="json")
+
+
+@app.get("/accounts")
+async def accounts(_: None = Depends(_require_api_key)) -> dict:
+    discovered, notes = discover_schwab_accounts(_bridge_config())
+    return {
+        "accounts": [
+            {
+                "id": account.id,
+                "label": account.label,
+                "account_number": account.account_number,
+                "source": account.source,
+                "account_type": account.account_type,
+                "supports_spreads": account.supports_spreads,
+                "enabled": account.enabled,
+                "default_selected": account.default_selected,
+                "order_configured": bool(account.account_hash),
+            }
+            for account in discovered
+        ],
+        "notes": notes,
+    }
+
+
+@app.post("/scan/run", response_model=ScanResult)
+async def run_scan(_: None = Depends(_require_api_key)) -> ScanResult:
+    result = await asyncio.to_thread(scanner.scan)
+    _rank_candidates(result)
+    storage.save_scan(result)
+    return result
+
+
+@app.get("/scan/latest", response_model=ScanResult | dict)
+async def latest_scan() -> ScanResult | dict:
+    result = storage.load_latest_scan()
+    if result is None:
+        return {"status": "not_found", "message": "No scan has been run yet."}
+    return result
+
+
+@app.post("/proposals/{proposal_id}/send", response_model=SendProposalResponse)
+async def send_proposal(
+    proposal_id: str,
+    request: SendProposalRequest,
+    _: None = Depends(_require_api_key),
+) -> SendProposalResponse:
+    proposal = storage.find_proposal(proposal_id)
+    if proposal is None:
+        raise HTTPException(status_code=404, detail="Proposal not found in latest scan.")
+
+    selected_ids = list(dict.fromkeys(request.selected_account_ids))
+    accounts, account_notes = discover_schwab_accounts(_bridge_config())
+    accounts_by_id = {account.id: account for account in accounts if account.enabled}
+    if not selected_ids:
+        response = SendProposalResponse(
+            status="blocked",
+            proposal_id=proposal_id,
+            selected_account_ids=[],
+            notes=["Select at least one Schwab account before sending.", *account_notes],
+        )
+        storage.append_order_event(response.model_dump(mode="json"))
+        return response
+
+    proposal_to_send = proposal
+    if request.quantity is not None and request.quantity != proposal.quantity:
+        proposal_to_send = proposal.model_copy(
+            update={
+                "quantity": request.quantity,
+                "legs": [leg.model_copy(update={"qty": request.quantity}) for leg in proposal.legs],
+            }
+        )
+    order_payload = schwab_order_payload(proposal_to_send, limit_price=request.limit_price)
+    live_gate_open = settings.service.live_gate_open
+    client = SchwabMarketDataClient(settings.schwab)
+    results: list[AccountSendResult] = []
+
+    for account_id in selected_ids:
+        account = accounts_by_id.get(account_id)
+        if account is None:
+            results.append(
+                AccountSendResult(
+                    account_id=account_id,
+                    account_label=account_id,
+                    status="blocked",
+                    reasons=["account_not_found_or_disabled"],
+                )
+            )
+            continue
+        reasons: list[str] = []
+        if proposal.structure == "debit_vertical" and not account.supports_spreads:
+            reasons.append("account_not_spread_approved")
+        if not account.account_hash:
+            reasons.append("account_hash_missing")
+        if not live_gate_open:
+            reasons.append("live_orders_blocked")
+        elif not request.confirm_live_order:
+            reasons.append("live_order_confirmation_required")
+
+        if any(reason not in {"live_orders_blocked", "live_order_confirmation_required"} for reason in reasons):
+            results.append(
+                AccountSendResult(
+                    account_id=account.id,
+                    account_label=account.label or account.id,
+                    status="blocked",
+                    reasons=reasons,
+                )
+            )
+            continue
+        if live_gate_open and request.confirm_live_order:
+            try:
+                placed = client.place_order(account.account_hash, order_payload)
+                results.append(
+                    AccountSendResult(
+                        account_id=account.id,
+                        account_label=account.label or account.id,
+                        status="submitted",
+                        reasons=["schwab_order_submitted"],
+                        broker_order_id=str(placed.get("broker_order_id") or "") or None,
+                        order_payload=order_payload,
+                    )
+                )
+            except SchwabApiError as exc:
+                results.append(
+                    AccountSendResult(
+                        account_id=account.id,
+                        account_label=account.label or account.id,
+                        status="blocked",
+                        reasons=[f"schwab_order_submit_failed:{str(exc)[:200]}"],
+                        order_payload=order_payload,
+                    )
+                )
+        else:
+            results.append(
+                AccountSendResult(
+                    account_id=account.id,
+                    account_label=account.label or account.id,
+                    status="dry_run" if "live_orders_blocked" in reasons else "blocked",
+                    reasons=reasons or ["order_payload_ready"],
+                    order_payload=order_payload,
+                )
+            )
+
+    status = _aggregate_status(results)
+    response = SendProposalResponse(
+        status=status,
+        proposal_id=proposal_id,
+        selected_account_ids=selected_ids,
+        account_results=results,
+        notes=[
+            _send_note(status),
+            f"Recorded at {datetime.now(timezone.utc).replace(microsecond=0).isoformat()}",
+        ],
+    )
+    storage.append_order_event(response.model_dump(mode="json"))
+    return response
+
+
+def _rank_candidates(result: ScanResult) -> None:
+    for index, candidate in enumerate(result.candidates, start=1):
+        candidate.rank = index
+    top_ids = {candidate.symbol for candidate in result.candidates[: settings.scanner.top_n]}
+    result.top_candidates = [candidate for candidate in result.candidates if candidate.symbol in top_ids]
+
+
+def _aggregate_status(results: list[AccountSendResult]) -> str:
+    if results and all(result.status == "submitted" for result in results):
+        return "submitted"
+    if any(result.status == "dry_run" for result in results):
+        return "dry_run"
+    return "blocked"
+
+
+def _send_note(status: str) -> str:
+    if status == "submitted":
+        return "Schwab order submission was attempted for every eligible selected account."
+    if status == "dry_run":
+        return "Order payloads were prepared only; live execution gates are not all open."
+    return "No Schwab order was submitted. Review account-level reasons."

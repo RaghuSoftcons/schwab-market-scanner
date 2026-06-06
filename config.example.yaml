@@ -1,0 +1,39 @@
+service:
+  execution_mode: "dry_run"
+  allow_live_orders: false
+  trading_enabled: false
+
+scanner:
+  symbols:
+    - "AAPL"
+    - "NVDA"
+  regime_symbols:
+    - "SPY"
+    - "QQQ"
+    - "DIA"
+  top_n: 10
+  interval_minutes: 30
+  min_price: 3
+  min_abs_gap_pct: 0.5
+  min_premarket_volume: 50000
+  timezone: "America/New_York"
+
+options:
+  expiries:
+    - "1DTE"
+  max_contracts: 5
+  min_debit_per_trade: 100
+  max_debit_per_trade: 500
+  marketable_limit_offset: 0.30
+  max_bid_ask_spread_percent: 20
+  min_open_interest: 100
+  quote_stale_after_seconds: 300
+
+schwab:
+  market_data_enabled: true
+  auto_refresh_enabled: true
+  token_store_path: "D:\\data\\schwab\\schwab_tokens.json"
+  import_existing_client: true
+
+storage:
+  path: "/data/scanner"
