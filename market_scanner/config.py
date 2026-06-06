@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -14,7 +15,7 @@ from nt_schwab_bridge.config import OptionPlannerConfig, SchwabConfig
 def _split_csv(value: str, fallback: list[str]) -> list[str]:
     if not value.strip():
         return fallback
-    return [item.strip().upper().replace("$", "") for item in value.split(",") if item.strip()]
+    return [item.strip().upper().replace("$", "") for item in re.split(r"[\s,]+", value) if item.strip()]
 
 
 def _env_bool(key: str, default: bool) -> bool:

@@ -4,9 +4,15 @@ from datetime import datetime, timezone
 
 from nt_schwab_bridge.models import OptionProposal, OptionProposalLeg
 
+from market_scanner.config import _split_csv
 from market_scanner.models import MarketRegime, TickerMetrics
 from market_scanner.orders import schwab_order_payload
 from market_scanner.scanner import candidate_score, classify_candidate
+
+
+def test_symbol_splitter_accepts_commas_or_whitespace():
+    assert _split_csv("AAPL,NVDA", ["SPY"]) == ["AAPL", "NVDA"]
+    assert _split_csv("SPY QQQ DIA", ["AAPL"]) == ["SPY", "QQQ", "DIA"]
 
 
 def test_gap_up_candidate_gets_call_bias_when_regime_not_bearish():
