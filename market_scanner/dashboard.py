@@ -58,8 +58,6 @@ def dashboard_html() -> str:
     .title h1 { margin: 0; font-size: 23px; line-height: 1.1; letter-spacing: 0; }
     .title .sub { margin-top: 6px; color: var(--muted); font-size: 14px; }
     .top-actions { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; justify-content: flex-end; }
-    .api-key-input { display: none; min-width: 0; width: 210px; }
-    .api-key-input.visible { display: block; }
     .layout { display: grid; grid-template-columns: minmax(320px, 360px) minmax(0, 1fr); gap: 6px; align-items: start; }
     .panel {
       background: var(--panel);
@@ -253,7 +251,6 @@ def dashboard_html() -> str:
       .top-actions, .proposal-controls { justify-content: stretch; }
       .top-actions > *, .proposal-controls > * { flex: 1 1 auto; }
       input { min-width: 0; width: 100%; }
-      .api-key-input { width: 100%; }
       .state-grid, .candidate-summary, .proposal-stats, .freshness { grid-template-columns: 1fr; }
       .kpis { grid-template-columns: 1fr; }
       .account-row { grid-template-columns: auto 1fr; }
@@ -269,8 +266,6 @@ def dashboard_html() -> str:
         <div class="sub" id="last-update">Loading...</div>
       </div>
       <div class="top-actions">
-        <button class="ghost" id="unlock-button" onclick="toggleApiKeyInput()">Unlock</button>
-        <input id="api-key" class="api-key-input" type="password" placeholder="API key" onchange="persistApiKeyAndLoadAccounts()">
         <button class="ghost" onclick="load()">Refresh</button>
         <button class="good" onclick="replayFriday()">Friday Replay</button>
         <button class="primary" onclick="runScan()">Run Scan</button>
@@ -441,24 +436,9 @@ function allProposals(scan) {
 function isSimProposal(proposal) {
   return String(proposal?.id || "").startsWith("sim_") || (proposal?.reasons || []).includes("SIM_ONLY");
 }
-function apiKey() { return byId("api-key").value.trim(); }
 function setStatus(text) { byId("last-update").textContent = text; }
 function activeConfig() { return appState.health?.config || {}; }
 function liveGateOpen() { return Boolean(activeConfig().live_gate_open); }
-
-function updateUnlockState() {
-  const keyPresent = Boolean(apiKey() || localStorage.getItem("scannerApiKey"));
-  const button = byId("unlock-button");
-  if (button) button.textContent = keyPresent ? "Unlocked" : "Unlock";
-}
-
-function toggleApiKeyInput() {
-  const input = byId("api-key");
-  input.classList.toggle("visible");
-  if (input.classList.contains("visible")) {
-    input.focus();
-  }
-}
 
 async function fetchJson(url, opts) {
   const res = await fetch(url, opts || {});
@@ -469,17 +449,7 @@ async function fetchJson(url, opts) {
 }
 
 function authOptions(method, body) {
-  const key = apiKey();
-  if (!key) {
-    byId("api-key").classList.add("visible");
-    byId("api-key").focus();
-    updateUnlockState();
-    byId("proposal-notice").textContent = "Enter API key to run protected actions.";
-    return null;
-  }
-  localStorage.setItem("scannerApiKey", key);
-  updateUnlockState();
-  const opts = { method, headers: { "X-API-Key": key } };
+  const opts = { method, headers: {} };
   if (body !== undefined) {
     opts.headers["Content-Type"] = "application/json";
     opts.body = JSON.stringify(body);
@@ -549,9 +519,6 @@ function applyTargets() {
 async function load() {
   loadDashboardSettings();
   renderSetupControls();
-  const savedKey = localStorage.getItem("scannerApiKey") || "";
-  if (savedKey && !byId("api-key").value) byId("api-key").value = savedKey;
-  updateUnlockState();
 
   const [healthResult, schwabResult, scanResult] = await Promise.all([
     fetchJson("/health"),
@@ -562,9 +529,7 @@ async function load() {
   appState.schwab = schwabResult.data;
   appState.scan = scanResult.data && scanResult.data.scan_id ? scanResult.data : null;
   render();
-  if (apiKey()) {
-    await loadAccounts({ force: false });
-  }
+  await loadAccounts({ force: false });
 }
 
 async function runScan() {
@@ -978,12 +943,6 @@ function renderExitPlan(proposal, cardIndex) {
 
 function renderAccountRouting(proposal, index) {
   const accounts = appState.accounts || [];
-  if (!apiKey()) {
-    return `<div class="accounts">
-      <div class="accounts-head"><div class="label">Accounts to Send</div><button onclick="loadAccounts()">Load Accounts</button></div>
-      <div class="account-list"><div class="muted">API key required to load Schwab accounts.</div></div>
-    </div>`;
-  }
   if (appState.accountsLoading) {
     return `<div class="accounts">
       <div class="accounts-head"><div class="label">Accounts to Send</div><button disabled>Loading...</button></div>
@@ -1014,19 +973,9 @@ function renderAccountRouting(proposal, index) {
   </div>`;
 }
 
-async function persistApiKeyAndLoadAccounts() {
-  const key = apiKey();
-  if (!key) return;
-  localStorage.setItem("scannerApiKey", key);
-  byId("api-key").classList.remove("visible");
-  updateUnlockState();
-  await loadAccounts({ force: true });
-}
-
 async function loadAccounts(options = {}) {
   const force = Boolean(options.force);
-  const key = apiKey();
-  if (!key) return;
+  const key = "dashboard-open-access";
   if (appState.accountsLoading) return;
   if (!force && appState.accountsLoadedForKey === key) return;
   const opts = authOptions("GET");
@@ -1079,8 +1028,6 @@ async function sendProposal(index) {
     if (status) status.textContent = "SIM_ONLY proposals are blocked from Schwab order submission.";
     return;
   }
-  const optsBase = authOptions("POST", {});
-  if (!optsBase) return;
   const selectedIds = Array.from(appState.selectedAccountIds);
   if (!selectedIds.length) {
     if (!appState.accounts.length) await loadAccounts();
