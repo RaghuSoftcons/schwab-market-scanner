@@ -58,7 +58,9 @@ def dashboard_html() -> str:
     .title h1 { margin: 0; font-size: 23px; line-height: 1.1; letter-spacing: 0; }
     .title .sub { margin-top: 6px; color: var(--muted); font-size: 14px; }
     .top-actions { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; justify-content: flex-end; }
-    .layout { display: grid; grid-template-columns: minmax(420px, 0.62fr) minmax(760px, 1.38fr); gap: 8px; align-items: start; }
+    .api-key-input { display: none; min-width: 0; width: 210px; }
+    .api-key-input.visible { display: block; }
+    .layout { display: grid; grid-template-columns: minmax(320px, 360px) minmax(0, 1fr); gap: 6px; align-items: start; }
     .panel {
       background: var(--panel);
       border: 1px solid var(--line);
@@ -77,11 +79,11 @@ def dashboard_html() -> str:
     .panel-head h2 { margin: 0; font-size: 16px; }
     .panel-title { font-size: 16px; font-weight: 900; }
     .panel-body { padding: 14px 15px; }
-    .kpis { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 7px; margin-bottom: 10px; }
+    .kpis { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; margin-bottom: 10px; }
     .kpi { min-height: 72px; padding: 10px 9px; background: white; border: 1px solid var(--line); border-radius: 8px; }
     .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0; }
     .kpi .value { margin-top: 7px; font-size: 16px; font-weight: 900; overflow-wrap: anywhere; }
-    .state-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; padding-top: 12px; border-top: 1px solid var(--line-soft); }
+    .state-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; padding-top: 12px; border-top: 1px solid var(--line-soft); }
     .state .value { margin-top: 5px; font-weight: 900; overflow-wrap: anywhere; }
     .badges { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
     .badge {
@@ -251,6 +253,7 @@ def dashboard_html() -> str:
       .top-actions, .proposal-controls { justify-content: stretch; }
       .top-actions > *, .proposal-controls > * { flex: 1 1 auto; }
       input { min-width: 0; width: 100%; }
+      .api-key-input { width: 100%; }
       .state-grid, .candidate-summary, .proposal-stats, .freshness { grid-template-columns: 1fr; }
       .kpis { grid-template-columns: 1fr; }
       .account-row { grid-template-columns: auto 1fr; }
@@ -266,7 +269,8 @@ def dashboard_html() -> str:
         <div class="sub" id="last-update">Loading...</div>
       </div>
       <div class="top-actions">
-        <input id="api-key" type="password" placeholder="API key" onchange="persistApiKeyAndLoadAccounts()">
+        <button class="ghost" id="unlock-button" onclick="toggleApiKeyInput()">Unlock</button>
+        <input id="api-key" class="api-key-input" type="password" placeholder="API key" onchange="persistApiKeyAndLoadAccounts()">
         <button class="ghost" onclick="load()">Refresh</button>
         <button class="good" onclick="replayFriday()">Friday Replay</button>
         <button class="primary" onclick="runScan()">Run Scan</button>
@@ -442,6 +446,20 @@ function setStatus(text) { byId("last-update").textContent = text; }
 function activeConfig() { return appState.health?.config || {}; }
 function liveGateOpen() { return Boolean(activeConfig().live_gate_open); }
 
+function updateUnlockState() {
+  const keyPresent = Boolean(apiKey() || localStorage.getItem("scannerApiKey"));
+  const button = byId("unlock-button");
+  if (button) button.textContent = keyPresent ? "Unlocked" : "Unlock";
+}
+
+function toggleApiKeyInput() {
+  const input = byId("api-key");
+  input.classList.toggle("visible");
+  if (input.classList.contains("visible")) {
+    input.focus();
+  }
+}
+
 async function fetchJson(url, opts) {
   const res = await fetch(url, opts || {});
   const text = await res.text();
@@ -453,10 +471,14 @@ async function fetchJson(url, opts) {
 function authOptions(method, body) {
   const key = apiKey();
   if (!key) {
+    byId("api-key").classList.add("visible");
+    byId("api-key").focus();
+    updateUnlockState();
     byId("proposal-notice").textContent = "Enter API key to run protected actions.";
     return null;
   }
   localStorage.setItem("scannerApiKey", key);
+  updateUnlockState();
   const opts = { method, headers: { "X-API-Key": key } };
   if (body !== undefined) {
     opts.headers["Content-Type"] = "application/json";
@@ -529,6 +551,7 @@ async function load() {
   renderSetupControls();
   const savedKey = localStorage.getItem("scannerApiKey") || "";
   if (savedKey && !byId("api-key").value) byId("api-key").value = savedKey;
+  updateUnlockState();
 
   const [healthResult, schwabResult, scanResult] = await Promise.all([
     fetchJson("/health"),
@@ -995,6 +1018,8 @@ async function persistApiKeyAndLoadAccounts() {
   const key = apiKey();
   if (!key) return;
   localStorage.setItem("scannerApiKey", key);
+  byId("api-key").classList.remove("visible");
+  updateUnlockState();
   await loadAccounts({ force: true });
 }
 
