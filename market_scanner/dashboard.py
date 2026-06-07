@@ -58,7 +58,7 @@ def dashboard_html() -> str:
     .title h1 { margin: 0; font-size: 23px; line-height: 1.1; letter-spacing: 0; }
     .title .sub { margin-top: 6px; color: var(--muted); font-size: 14px; }
     .top-actions { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; justify-content: flex-end; }
-    .layout { display: grid; grid-template-columns: minmax(540px, 0.92fr) minmax(720px, 1.08fr); gap: 14px; align-items: start; }
+    .layout { display: grid; grid-template-columns: minmax(560px, 1.08fr) minmax(560px, 0.92fr); gap: 12px; align-items: start; }
     .panel {
       background: var(--panel);
       border: 1px solid var(--line);
@@ -117,33 +117,43 @@ def dashboard_html() -> str:
     .bad-text { color: var(--red); }
     .warn-text { color: var(--amber); }
     .right-panel { position: sticky; top: 14px; }
-    .proposal-toolbar { display: grid; grid-template-columns: minmax(180px, 1fr) minmax(620px, auto); gap: 12px; align-items: start; }
+    .right-panel .panel-head { padding: 10px 12px; }
+    .right-panel .panel-body { padding: 10px 12px; }
+    .right-panel button { padding: 6px 9px; font-size: 13px; }
+    .proposal-toolbar { display: grid; grid-template-columns: minmax(160px, 0.7fr) minmax(430px, auto); gap: 8px; align-items: start; }
     .proposal-title h2 { margin: 0 0 5px; font-size: 16px; }
-    .proposal-controls { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; align-items: center; }
-    .proposal-settings { display: inline-flex; gap: 8px; align-items: center; flex-wrap: nowrap; }
-    .setting-label { color: var(--muted); font-size: 12px; font-weight: 900; text-transform: uppercase; }
+    .right-panel .proposal-title h2 { font-size: 15px; }
+    .proposal-controls { display: flex; gap: 5px; flex-wrap: wrap; justify-content: flex-end; align-items: center; }
+    .proposal-settings { display: inline-flex; gap: 5px; align-items: center; flex-wrap: nowrap; }
+    .setting-label { color: var(--muted); font-size: 11px; font-weight: 900; text-transform: uppercase; }
     .segmented { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: white; }
     .segment-button {
       border: 0;
       border-right: 1px solid var(--line);
       border-radius: 0;
       box-shadow: none;
-      min-width: 58px;
-      padding: 9px 11px;
+      min-width: 46px;
+      padding: 6px 8px;
       background: white;
       font-weight: 800;
+      font-size: 13px;
     }
     .segment-button:last-child { border-right: 0; }
     .segment-button.active { background: var(--green-bg); color: var(--green); }
-    .checkbox-setting { display: inline-flex; align-items: center; gap: 7px; font-weight: 900; }
-    .checkbox-setting input { min-width: 0; width: 20px; height: 20px; accent-color: var(--green); }
-    .target-inputs { display: inline-flex; gap: 6px; }
-    .target-inputs input { min-width: 0; width: 64px; font-weight: 900; text-align: center; }
-    .moneyness-strip { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
-    .candidate-summary, .freshness { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin: 14px 0; }
+    .checkbox-setting { display: inline-flex; align-items: center; gap: 5px; font-weight: 900; font-size: 13px; }
+    .checkbox-setting input { min-width: 0; width: 17px; height: 17px; accent-color: var(--green); }
+    .target-inputs { display: inline-flex; gap: 4px; }
+    .target-inputs input { min-width: 0; width: 46px; font-weight: 900; text-align: center; padding: 6px 7px; font-size: 13px; }
+    .moneyness-strip { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
+    .right-panel .moneyness-strip .badge { min-height: 22px; padding: 3px 7px; font-size: 11px; }
+    .candidate-summary, .freshness { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin: 9px 0; }
     .freshness { grid-template-columns: repeat(3, minmax(0, 1fr)); }
     .metric { border: 1px solid var(--line); border-radius: 8px; padding: 11px; background: #fbfdff; min-width: 0; }
     .metric .value { margin-top: 7px; font-size: 18px; font-weight: 900; overflow-wrap: anywhere; }
+    .right-panel .metric { padding: 8px 9px; min-height: 58px; }
+    .right-panel .metric .label { font-size: 11px; }
+    .right-panel .metric .value { margin-top: 4px; font-size: 15px; }
+    .right-panel .notice { padding: 9px 11px; font-size: 13px; line-height: 1.35; }
     .proposal-card {
       border: 1px solid #bbf7d0;
       border-left: 4px solid var(--green);
@@ -227,7 +237,7 @@ def dashboard_html() -> str:
     .account-row.disabled { background: var(--red-bg); border-color: #fecdd3; }
     .account-row input { min-width: 0; width: 18px; height: 18px; accent-color: var(--blue); }
     .send-status { margin-top: 8px; font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
-    .empty { padding: 24px; color: var(--muted); text-align: center; border: 1px dashed var(--line); border-radius: 8px; background: #fbfdff; }
+    .empty { padding: 14px; color: var(--muted); text-align: center; border: 1px dashed var(--line); border-radius: 8px; background: #fbfdff; font-size: 12px; line-height: 1.35; }
     @media (max-width: 1280px) {
       .layout { grid-template-columns: 1fr; }
       .right-panel { position: static; }
