@@ -58,7 +58,7 @@ def dashboard_html() -> str:
     .title h1 { margin: 0; font-size: 23px; line-height: 1.1; letter-spacing: 0; }
     .title .sub { margin-top: 6px; color: var(--muted); font-size: 14px; }
     .top-actions { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; justify-content: flex-end; }
-    .layout { display: grid; grid-template-columns: minmax(560px, 1.08fr) minmax(560px, 0.92fr); gap: 12px; align-items: start; }
+    .layout { display: grid; grid-template-columns: minmax(420px, 0.62fr) minmax(760px, 1.38fr); gap: 8px; align-items: start; }
     .panel {
       background: var(--panel);
       border: 1px solid var(--line);
@@ -77,10 +77,10 @@ def dashboard_html() -> str:
     .panel-head h2 { margin: 0; font-size: 16px; }
     .panel-title { font-size: 16px; font-weight: 900; }
     .panel-body { padding: 14px 15px; }
-    .kpis { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; margin-bottom: 12px; }
-    .kpi { min-height: 82px; padding: 12px; background: white; border: 1px solid var(--line); border-radius: 8px; }
+    .kpis { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 7px; margin-bottom: 10px; }
+    .kpi { min-height: 72px; padding: 10px 9px; background: white; border: 1px solid var(--line); border-radius: 8px; }
     .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0; }
-    .kpi .value { margin-top: 8px; font-size: 18px; font-weight: 900; overflow-wrap: anywhere; }
+    .kpi .value { margin-top: 7px; font-size: 16px; font-weight: 900; overflow-wrap: anywhere; }
     .state-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; padding-top: 12px; border-top: 1px solid var(--line-soft); }
     .state .value { margin-top: 5px; font-weight: 900; overflow-wrap: anywhere; }
     .badges { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
@@ -238,7 +238,7 @@ def dashboard_html() -> str:
     .account-row input { min-width: 0; width: 18px; height: 18px; accent-color: var(--blue); }
     .send-status { margin-top: 8px; font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
     .empty { padding: 14px; color: var(--muted); text-align: center; border: 1px dashed var(--line); border-radius: 8px; background: #fbfdff; font-size: 12px; line-height: 1.35; }
-    @media (max-width: 1280px) {
+    @media (max-width: 1180px) {
       .layout { grid-template-columns: 1fr; }
       .right-panel { position: static; }
       .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
