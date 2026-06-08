@@ -32,6 +32,22 @@ storage = ScannerStorage(settings.storage.path)
 scanner = MarketScanner(settings)
 _scheduler_task: asyncio.Task | None = None
 
+ACCOUNT_ALIASES = {
+    "51116118": "Raghu - SEP IRA",
+    "19900410": "Grow Fly 9999",
+    "38824353": "Nirupa - IRA",
+    "64962736": "Final Frontier",
+    "26144145": "Wolf Group",
+    "15419231": "Nirupa - Individual",
+    "85839327": "Grow Fly",
+    "93484309": "Raghu - IRA",
+    "22572756": "Raghu General",
+    "62058846": "Raghu Nirupa Joint",
+    "32552523": "Raghu - Roth",
+    "47169783": "NIFTY LLC",
+    "66502618": "Individual",
+}
+
 
 def _bridge_config() -> BridgeConfig:
     return BridgeConfig(
@@ -57,7 +73,7 @@ async def _scheduler_loop() -> None:
     await asyncio.sleep(3)
     while True:
         try:
-            result = await asyncio.to_thread(scanner.scan)
+            result = await asyncio.to_thread(scanner.scan, include_options=False)
             _rank_candidates(result)
             storage.save_scan(result)
         except Exception:
@@ -109,7 +125,7 @@ async def accounts(_: None = Depends(_require_api_key)) -> dict:
         "accounts": [
             {
                 "id": account.id,
-                "label": account.label,
+                "label": _account_display_label(account),
                 "account_number": account.account_number,
                 "source": account.source,
                 "account_type": account.account_type,
@@ -130,6 +146,32 @@ async def run_scan(
     include_options: bool = True,
 ) -> ScanResult:
     result = await asyncio.to_thread(scanner.scan, include_options=include_options)
+    _rank_candidates(result)
+    storage.save_scan(result)
+    return result
+
+
+@app.post("/scan/selected/{symbol}", response_model=ScanResult)
+async def build_selected_scan_proposals(
+    symbol: str,
+    _: None = Depends(_require_api_key),
+) -> ScanResult:
+    normalized = symbol.upper().replace("$", "").strip()
+    if not normalized:
+        raise HTTPException(status_code=400, detail="Symbol is required.")
+    result = storage.load_latest_scan()
+    if result is None:
+        result = await asyncio.to_thread(scanner.scan, include_options=False)
+        _rank_candidates(result)
+    try:
+        result = await asyncio.to_thread(scanner.build_selected_candidate_proposals, result, normalized)
+    except ValueError:
+        result = await asyncio.to_thread(scanner.scan, include_options=False)
+        _rank_candidates(result)
+        try:
+            result = await asyncio.to_thread(scanner.build_selected_candidate_proposals, result, normalized)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
     _rank_candidates(result)
     storage.save_scan(result)
     return result
@@ -258,7 +300,7 @@ async def send_proposal(
             results.append(
                 AccountSendResult(
                     account_id=account.id,
-                    account_label=account.label or account.id,
+                    account_label=_account_display_label(account),
                     status="blocked",
                     reasons=reasons,
                 )
@@ -270,7 +312,7 @@ async def send_proposal(
                 results.append(
                     AccountSendResult(
                         account_id=account.id,
-                        account_label=account.label or account.id,
+                        account_label=_account_display_label(account),
                         status="submitted",
                         reasons=["schwab_order_submitted"],
                         broker_order_id=str(placed.get("broker_order_id") or "") or None,
@@ -281,7 +323,7 @@ async def send_proposal(
                 results.append(
                     AccountSendResult(
                         account_id=account.id,
-                        account_label=account.label or account.id,
+                        account_label=_account_display_label(account),
                         status="blocked",
                         reasons=[f"schwab_order_submit_failed:{str(exc)[:200]}"],
                         order_payload=order_payload,
@@ -291,7 +333,7 @@ async def send_proposal(
             results.append(
                 AccountSendResult(
                     account_id=account.id,
-                    account_label=account.label or account.id,
+                    account_label=_account_display_label(account),
                     status="dry_run" if "live_orders_blocked" in reasons else "blocked",
                     reasons=reasons or ["order_payload_ready"],
                     order_payload=order_payload,
@@ -318,6 +360,21 @@ def _rank_candidates(result: ScanResult) -> None:
         candidate.rank = index
     top_ids = {candidate.symbol for candidate in result.candidates[: settings.scanner.top_n]}
     result.top_candidates = [candidate for candidate in result.candidates if candidate.symbol in top_ids]
+
+
+def _account_display_label(account) -> str:
+    for value in (getattr(account, "account_number", ""), getattr(account, "label", ""), getattr(account, "id", "")):
+        digits = "".join(ch for ch in str(value) if ch.isdigit())
+        if digits in ACCOUNT_ALIASES:
+            return ACCOUNT_ALIASES[digits]
+        matches = [
+            alias
+            for account_number, alias in ACCOUNT_ALIASES.items()
+            if len(digits) >= 4 and account_number.endswith(digits)
+        ]
+        if len(matches) == 1:
+            return matches[0]
+    return getattr(account, "label", "") or getattr(account, "account_number", "") or getattr(account, "id", "")
 
 
 def _aggregate_status(results: list[AccountSendResult]) -> str:

@@ -207,6 +207,44 @@ class MarketScanner:
             for candidate in ranked
         ]
 
+    def build_selected_candidate_proposals(
+        self,
+        result: ScanResult,
+        symbol: str,
+        as_of: datetime | None = None,
+    ) -> ScanResult:
+        normalized = symbol.upper().replace("$", "").strip()
+        scanned_at = _utc(as_of or datetime.now(timezone.utc))
+        selected_found = False
+        updated_candidates: list[ScannerCandidate] = []
+        for candidate in result.candidates:
+            reset_candidate = candidate.model_copy(
+                update={
+                    "proposals": [],
+                    "proposal_blocked_reasons": [],
+                }
+            )
+            if candidate.symbol.upper() == normalized:
+                selected_found = True
+                reset_candidate = self._candidate_with_proposals(reset_candidate, scanned_at, "live")
+            updated_candidates.append(reset_candidate)
+        if not selected_found:
+            raise ValueError(f"Symbol {normalized} is not present in the latest scan.")
+        return result.model_copy(
+            update={
+                "candidates": updated_candidates,
+                "top_candidates": updated_candidates[: self.settings.scanner.top_n],
+                "notes": list(
+                    dict.fromkeys(
+                        [
+                            *result.notes,
+                            f"Built option proposals only for selected symbol {normalized}.",
+                        ]
+                    )
+                ),
+            }
+        )
+
     def _candidate_with_proposals(
         self,
         candidate: ScannerCandidate,

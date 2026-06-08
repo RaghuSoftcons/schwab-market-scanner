@@ -277,7 +277,7 @@ def dashboard_html() -> str:
         <div class="sub" id="last-update">Loading...</div>
       </div>
       <div class="top-actions">
-        <button class="primary" id="run-scan-button" data-run-scan-button onclick="runScan(true)">Run Scan</button>
+        <button class="primary" id="build-selected-button" data-selected-build-button onclick="buildSelectedProposal()">Build Selected</button>
       </div>
     </section>
 
@@ -562,6 +562,37 @@ async function runScan(includeOptions = true) {
   }
 }
 
+async function buildSelectedProposal() {
+  const symbol = appState.selectedSymbol;
+  if (!symbol) {
+    byId("proposal-status").textContent = "select a symbol";
+    byId("proposal-notice").className = "notice";
+    byId("proposal-notice").textContent = "Select a candidate on the left before building proposals.";
+    return;
+  }
+  const opts = authOptions("POST");
+  if (!opts) return;
+  const buttons = Array.from(document.querySelectorAll("[data-selected-build-button]"));
+  buttons.forEach(button => {
+    button.dataset.originalText = button.dataset.originalText || button.textContent;
+    button.disabled = true;
+    button.textContent = `Building ${symbol}...`;
+  });
+  setStatus(`Building ${symbol} proposals...`);
+  byId("proposal-status").textContent = `building ${symbol}`;
+  byId("proposal-notice").className = "notice";
+  byId("proposal-notice").textContent = `Fetching Schwab option chains only for ${symbol}.`;
+  try {
+    const result = await fetchJson(`/scan/selected/${encodeURIComponent(symbol)}`, opts);
+    renderProtectedResult(result);
+  } finally {
+    buttons.forEach(button => {
+      button.disabled = false;
+      button.textContent = button.dataset.originalText || "Build Selected";
+    });
+  }
+}
+
 function renderProtectedResult(result) {
   if (!result.ok) {
     const detail = result.data?.detail || result.data?.message || result.data?.body || `HTTP ${result.status}`;
@@ -608,6 +639,7 @@ function render() {
   byId("state-summary").title = universe.join(", ");
   byId("candidate-count").textContent = `${(scan?.top_candidates || []).length} shown`;
   setStatus(`Last update: ${shortTime(scan?.scanned_at || health.latest_scan_at)}`);
+  renderBuildButton();
 
   if (!scan) {
     byId("candidate-rows").innerHTML = `<tr><td colspan="7" class="muted">No scan has been saved yet.</td></tr>`;
@@ -620,24 +652,36 @@ function render() {
     const firstWithProposal = candidates.find(item => candidateProposals(item).length > 0);
     appState.selectedSymbol = (firstWithProposal || candidates[0] || {}).symbol || null;
   }
+  renderBuildButton();
   byId("candidate-rows").innerHTML = candidates.map(candidateRow).join("") ||
     `<tr><td colspan="7" class="muted">No candidates.</td></tr>`;
   renderProposal(candidates.find(item => item.symbol === appState.selectedSymbol) || candidates[0]);
+}
+
+function renderBuildButton() {
+  const buildButton = byId("build-selected-button");
+  if (!buildButton) return;
+  buildButton.disabled = !appState.selectedSymbol;
+  buildButton.textContent = appState.selectedSymbol ? `Build ${appState.selectedSymbol}` : "Build Selected";
+  buildButton.dataset.originalText = buildButton.textContent;
 }
 
 function candidateRow(candidate) {
   const metrics = candidate.metrics || {};
   const selected = candidate.symbol === appState.selectedSymbol ? " selected" : "";
   const proposals = candidateProposals(candidate);
+  const blockedReasons = candidate.proposal_blocked_reasons || [];
   const tone = candidate.action === "CALL_BIAS" ? "green" : candidate.action === "PUT_BIAS" ? "amber" : "gray";
   const selectedAttr = esc(candidate.symbol).replace(/'/g, "\\'");
+  const proposalBadgeText = proposals.length ? `${proposals.length} ready` : blockedReasons.length ? "blocked" : "not built";
+  const proposalBadgeTone = proposals.length ? "green" : blockedReasons.length ? "amber" : "gray";
   return `<tr class="candidate-row${selected}" onclick="selectCandidate('${selectedAttr}')">
     <td><div class="sym">${esc(candidate.symbol)}</div><div class="tiny">rank ${candidate.rank || ""}</div></td>
     <td>${badge(candidate.action || "WATCH", tone)}</td>
     <td>${plainMoney(metrics.current_price)}</td>
     <td class="${Number(metrics.gap_pct || 0) >= 0 ? "good-text" : "bad-text"}">${pct(metrics.gap_pct)}</td>
     <td>${intFmt(metrics.premarket_volume)}</td>
-    <td>${badge(`${proposals.length} ready`, proposals.length ? "green" : "gray")}</td>
+    <td>${badge(proposalBadgeText, proposalBadgeTone)}</td>
     <td><div>${esc((candidate.reasons || []).join(", ") || "--")}</div><div class="tiny">${esc((candidate.warnings || []).join(", "))}</div></td>
   </tr>`;
 }
@@ -653,7 +697,7 @@ function renderProposal(candidate) {
     byId("proposal-subtitle").textContent = "No candidate selected.";
     byId("proposal-status").textContent = "no proposal";
     byId("proposal-notice").className = "notice";
-    byId("proposal-notice").textContent = "Run a full scan to populate proposals.";
+    byId("proposal-notice").textContent = "Refresh prices, select a candidate, then build selected proposals.";
     byId("proposal-cards").innerHTML = `<div class="empty">No proposal selected.</div>`;
     renderQuoteFreshness([]);
     setMetrics(null);
@@ -661,21 +705,26 @@ function renderProposal(candidate) {
   }
   const metrics = candidate.metrics || {};
   const proposals = candidateProposals(candidate);
+  const blockedReasons = candidate.proposal_blocked_reasons || [];
   appState.currentProposals = proposals;
   const sim = proposals.some(isSimProposal);
   const moneyness = proposals.map(proposalMoneyness).filter(Boolean);
   const uniqueMoneyness = Array.from(new Set(moneyness)).join(", ") || "ATM/OTM";
   byId("proposal-subtitle").textContent = `${candidate.symbol} ${candidate.action} | ${proposals.length} proposal${proposals.length === 1 ? "" : "s"} | ${uniqueMoneyness}`;
-  byId("proposal-status").textContent = proposals.length ? "ready" : "blocked";
-  byId("proposal-notice").className = sim ? "notice" : "notice green";
-  byId("proposal-notice").textContent = sim
-    ? "SIM ONLY: replayed Friday underlying prices with current Schwab option-chain contract data. Order sending is blocked."
-    : "Access token is present for read-only market-data calls. Schwab order placement remains controlled by scanner execution gates.";
+  byId("proposal-status").textContent = proposals.length ? "ready" : blockedReasons.length ? "blocked" : "not built";
+  byId("proposal-notice").className = proposals.length && !sim ? "notice green" : "notice";
+  byId("proposal-notice").textContent = proposals.length
+    ? sim
+      ? "SIM ONLY: replayed Friday underlying prices with current Schwab option-chain contract data. Order sending is blocked."
+      : "Access token is present for read-only market-data calls. Schwab order placement remains controlled by scanner execution gates."
+    : blockedReasons.length
+      ? "No eligible proposal survived the current option-chain filters."
+      : `Click Build ${candidate.symbol} to fetch option proposals for only this ticker.`;
   setMetrics(metrics);
   renderQuoteFreshness(proposals);
   byId("proposal-cards").innerHTML = proposals.length
     ? proposals.map((proposal, index) => proposalCard(proposal, index)).join("")
-    : `<div class="empty">${esc((candidate.proposal_blocked_reasons || ["No proposals for this candidate."]).join(" | "))}</div>`;
+    : `<div class="empty">${esc((blockedReasons.length ? blockedReasons : [`Build ${candidate.symbol} to fetch selected proposals.`]).join(" | "))}</div>`;
 }
 
 function setMetrics(metrics) {
