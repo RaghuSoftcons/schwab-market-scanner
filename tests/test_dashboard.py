@@ -19,6 +19,7 @@ def test_dashboard_contains_reference_proposal_controls() -> None:
         "Entry Limit",
         "Exit Plan",
         "Accounts to Send",
+        "Refresh Prices",
         "ITM",
         "ATM",
         "OTM",
@@ -28,3 +29,4 @@ def test_dashboard_contains_reference_proposal_controls() -> None:
 
     assert "Unlock" not in response.text
     assert "api-key-input" not in response.text
+    assert "Refresh Proposal" not in response.text

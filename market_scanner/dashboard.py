@@ -276,7 +276,7 @@ def dashboard_html() -> str:
       </div>
       <div class="top-actions">
         <button class="ghost" onclick="load()">Refresh</button>
-        <button class="primary" id="run-scan-button" onclick="runScan()">Run Scan</button>
+        <button class="primary" id="run-scan-button" data-run-scan-button onclick="runScan()">Run Scan</button>
       </div>
     </section>
 
@@ -356,7 +356,7 @@ def dashboard_html() -> str:
             <button class="ghost" onclick="testSound()">Test Sound</button>
             <button class="ghost" onclick="showFirstProposal()">Show Proposal</button>
             <button class="ghost" disabled>Mark Reviewed</button>
-            <button class="ghost" onclick="load()">Refresh Proposal</button>
+            <button class="ghost" id="refresh-prices-button" data-run-scan-button onclick="runScan()">Refresh Prices</button>
           </div>
         </div>
         <div class="panel-body">
@@ -536,11 +536,12 @@ async function load() {
 async function runScan() {
   const opts = authOptions("POST");
   if (!opts) return;
-  const button = byId("run-scan-button");
-  if (button) {
+  const buttons = Array.from(document.querySelectorAll("[data-run-scan-button]"));
+  buttons.forEach(button => {
+    button.dataset.originalText = button.dataset.originalText || button.textContent;
     button.disabled = true;
-    button.textContent = "Scanning...";
-  }
+    button.textContent = button.id === "refresh-prices-button" ? "Refreshing..." : "Scanning...";
+  });
   setStatus("Running live scan...");
   byId("proposal-status").textContent = "scanning";
   byId("proposal-notice").className = "notice";
@@ -549,10 +550,10 @@ async function runScan() {
     const result = await fetchJson("/scan/run", opts);
     renderProtectedResult(result);
   } finally {
-    if (button) {
+    buttons.forEach(button => {
       button.disabled = false;
-      button.textContent = "Run Scan";
-    }
+      button.textContent = button.dataset.originalText || "Run Scan";
+    });
   }
 }
 
