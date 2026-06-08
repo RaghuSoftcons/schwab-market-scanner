@@ -4,7 +4,7 @@ from datetime import date, datetime, timezone
 
 from nt_schwab_bridge.models import OptionProposal, OptionProposalLeg
 
-from market_scanner.app import _exit_target_previews, _extract_schwab_fill
+from market_scanner.app import _exit_target_previews, _extract_schwab_fill, _proposal_from_order_payload
 
 
 def test_filled_order_creates_fill_based_exit_preview() -> None:
@@ -51,3 +51,35 @@ def test_filled_order_creates_fill_based_exit_preview() -> None:
     assert targets[0].target_limit_price == 3.12
     assert targets[0].estimated_profit == 62
     assert targets[0].tos_exit_order_line.startswith("SELL -1 SINGLE PLTR 100 12 JUN 26 120 CALL @3.12 LMT GTC")
+
+
+def test_order_payload_restores_proposal_for_older_audit_events() -> None:
+    proposal = _proposal_from_order_payload(
+        proposal_id="old_proposal",
+        created_at="2026-06-08T15:40:00Z",
+        order_payload={
+            "session": "NORMAL",
+            "duration": "DAY",
+            "orderType": "LIMIT",
+            "complexOrderStrategyType": "NONE",
+            "quantity": 1,
+            "price": "2.50",
+            "orderStrategyType": "SINGLE",
+            "orderLegCollection": [
+                {
+                    "instruction": "BUY_TO_OPEN",
+                    "quantity": 1,
+                    "instrument": {
+                        "symbol": "PLTR  260612C00120000",
+                        "assetType": "OPTION",
+                    },
+                }
+            ],
+        },
+    )
+
+    assert proposal is not None
+    assert proposal.symbol == "PLTR"
+    assert proposal.expiry == date(2026, 6, 12)
+    assert proposal.legs[0].strike == 120
+    assert proposal.max_loss == 250

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+import re
 from contextlib import asynccontextmanager
 from datetime import date as date_type
 from datetime import datetime, time, timedelta, timezone
@@ -12,7 +13,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.responses import HTMLResponse
 
 from nt_schwab_bridge.config import BridgeConfig, RiskConfig, ServiceConfig
-from nt_schwab_bridge.models import OptionProposal
+from nt_schwab_bridge.models import OptionProposal, OptionProposalLeg
 from nt_schwab_bridge.schwab_adapter import (
     SchwabApiError,
     SchwabMarketDataClient,
@@ -463,12 +464,128 @@ def _proposal_from_order_audit(proposal_id: str) -> OptionProposal | None:
             continue
         if latest_event is None or str(event.get("recorded_at") or "") >= str(latest_event.get("recorded_at") or ""):
             latest_event = event
-    if latest_event is None:
+    if latest_event is not None:
+        try:
+            return OptionProposal.model_validate(latest_event["proposal"])
+        except ValueError:
+            pass
+
+    fallback_event: dict | None = None
+    fallback_payload: dict | None = None
+    for event in storage.list_order_events():
+        if event.get("proposal_id") != proposal_id:
+            continue
+        for result in _account_order_events(event):
+            order_payload = result.get("order_payload")
+            if not isinstance(order_payload, dict):
+                continue
+            if fallback_event is None or str(result.get("created_at") or "") >= str(fallback_event.get("created_at") or ""):
+                fallback_event = result
+                fallback_payload = order_payload
+    if fallback_payload is None:
         return None
+    return _proposal_from_order_payload(
+        proposal_id=proposal_id,
+        order_payload=fallback_payload,
+        created_at=str(fallback_event.get("created_at") or "") if fallback_event else "",
+    )
+
+
+def _proposal_from_order_payload(
+    *,
+    proposal_id: str,
+    order_payload: dict,
+    created_at: str,
+) -> OptionProposal | None:
+    raw_legs = order_payload.get("orderLegCollection")
+    if not isinstance(raw_legs, list):
+        return None
+    order_price = _to_float(order_payload.get("price"))
+    order_quantity = max(1, int(_to_float(order_payload.get("quantity")) or 1))
+    legs: list[OptionProposalLeg] = []
+    for raw_leg in raw_legs:
+        if not isinstance(raw_leg, dict):
+            continue
+        instrument = raw_leg.get("instrument")
+        if not isinstance(instrument, dict):
+            continue
+        parsed = _parse_broker_option_symbol(str(instrument.get("symbol") or ""))
+        if parsed is None:
+            continue
+        symbol, expiry, right, strike = parsed
+        instruction = str(raw_leg.get("instruction") or "").upper()
+        action = "SELL" if instruction.startswith("SELL") else "BUY"
+        leg_quantity = max(1, int(_to_float(raw_leg.get("quantity")) or order_quantity))
+        legs.append(
+            OptionProposalLeg(
+                action=action,
+                qty=leg_quantity,
+                symbol=symbol,
+                broker_symbol=str(instrument.get("symbol") or ""),
+                expiry=expiry,
+                strike=strike,
+                right=right,
+                price=order_price,
+            )
+        )
+    if not legs:
+        return None
+    complex_type = str(order_payload.get("complexOrderStrategyType") or "").upper()
+    order_type = str(order_payload.get("orderType") or "").upper()
+    structure = "debit_vertical" if len(legs) > 1 or complex_type == "VERTICAL" or order_type.startswith("NET") else "single"
+    strikes = [float(leg.strike) for leg in legs]
+    width = abs(strikes[0] - strikes[1]) if len(strikes) >= 2 else None
+    debit = round(order_price * order_quantity * 100, 2)
+    right = legs[0].right
+    created = _parse_audit_datetime(created_at) or datetime.now(timezone.utc)
+    direction = "short" if right == "PUT" else "long"
+    return OptionProposal(
+        id=proposal_id,
+        signal_id=f"audit_{proposal_id}",
+        symbol=legs[0].symbol,
+        direction=direction,
+        structure=structure,
+        created_at=created,
+        expiry=legs[0].expiry,
+        quantity=order_quantity,
+        legs=legs,
+        debit=debit,
+        max_loss=debit,
+        natural_limit_price=order_price,
+        natural_debit=debit,
+        send_limit_price=order_price,
+        width=width,
+        tos_order_line="",
+        reasons=["restored_from_order_audit"],
+        notes=["Restored from submitted Schwab order audit; use Get Order Info to refresh actual fill."],
+        dry_run=False,
+    )
+
+
+def _parse_broker_option_symbol(value: str) -> tuple[str, date_type, str, float] | None:
+    match = re.match(r"^(.{1,6})(\d{6})([CP])(\d{8})$", value.strip())
+    if match is None:
+        return None
+    symbol = match.group(1).strip().upper()
     try:
-        return OptionProposal.model_validate(latest_event["proposal"])
+        expiry = datetime.strptime(match.group(2), "%y%m%d").date()
     except ValueError:
         return None
+    right = "CALL" if match.group(3) == "C" else "PUT"
+    strike = int(match.group(4)) / 1000
+    return symbol, expiry, right, strike
+
+
+def _parse_audit_datetime(value: str) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed
 
 
 def _proposal_order_status_response(
