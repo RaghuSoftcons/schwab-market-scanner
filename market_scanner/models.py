@@ -10,7 +10,7 @@ from nt_schwab_bridge.models import OptionProposal
 
 Bias = Literal["bullish", "bearish", "mixed", "unknown"]
 CandidateAction = Literal["CALL_BIAS", "PUT_BIAS", "WATCH", "AVOID"]
-ScanSession = Literal["premarket", "regular", "after_hours", "closed"]
+ScanSession = Literal["overnight", "premarket", "regular", "after_hours", "closed"]
 
 
 class Candle(BaseModel):

@@ -10,6 +10,7 @@ from market_scanner.config import _split_csv
 from market_scanner.models import Candle, MarketRegime, TickerMetrics
 from market_scanner.orders import schwab_order_payload
 from market_scanner.scanner import (
+    _session,
     _signal_record,
     _simulated_fallback_proposals,
     _simulated_replay_expiries,
@@ -69,6 +70,13 @@ def test_replay_metrics_ignore_future_intraday_bars():
     assert metrics.gap_pct == 5
     assert metrics.premarket_high == 106
     assert metrics.today_high is None
+
+
+def test_sunday_evening_is_overnight_session():
+    tz = ZoneInfo("America/New_York")
+    as_of = datetime(2026, 6, 7, 20, 15, tzinfo=tz)
+
+    assert _session(as_of, "America/New_York") == "overnight"
 
 
 def test_simulated_fallback_proposal_is_marked_sim_only():

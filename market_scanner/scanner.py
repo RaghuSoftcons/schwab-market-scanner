@@ -275,6 +275,12 @@ def compute_metrics(
     latest = usable_bars[-1] if usable_bars else None
     quote_price = quote.last if quote and quote.last and quote.last > 0 else None
     current_price = quote_price or (latest.close if latest else None)
+    price_time = quote.timestamp if quote_price and quote and quote.timestamp else (latest.timestamp if latest else None)
+    data_notes = _data_freshness_notes(
+        as_of=as_of,
+        price_time=price_time,
+        session=_session(as_of, timezone_name),
+    )
     gap_pct = (
         ((current_price - previous.close) / previous.close) * 100
         if current_price is not None and previous is not None and previous.close
@@ -305,7 +311,7 @@ def compute_metrics(
         ask=_round(ask),
         spread_pct=_round(spread_pct),
         latest_bar_time=latest.timestamp if latest else None,
-        data_notes=[],
+        data_notes=data_notes,
     )
 
 
@@ -318,7 +324,7 @@ def classify_candidate(
     min_premarket_volume: int,
 ) -> tuple[CandidateAction, str, list[str], list[str]]:
     reasons: list[str] = []
-    warnings: list[str] = []
+    warnings: list[str] = list(metrics.data_notes)
     if metrics.current_price is None or metrics.previous_close is None or metrics.gap_pct is None:
         return "AVOID", "none", ["missing_price_or_gap_data"], metrics.data_notes
     if metrics.current_price < min_price:
@@ -595,7 +601,16 @@ def _vwap(candles: list[Candle]) -> float | None:
 def _session(value: datetime, timezone_name: str) -> ScanSession:
     local = value.astimezone(ZoneInfo(timezone_name))
     clock = local.time().replace(tzinfo=None)
-    if local.weekday() >= 5:
+    weekday = local.weekday()
+    if weekday == 5:
+        return "closed"
+    if weekday == 6:
+        return "overnight" if clock >= time(20, 0) else "closed"
+    if weekday < 4 and clock >= time(20, 0):
+        return "overnight"
+    if weekday <= 4 and clock < time(4, 0):
+        return "overnight"
+    if weekday == 4 and clock >= time(20, 0):
         return "closed"
     if time(4, 0) <= clock < time(9, 30):
         return "premarket"
@@ -604,6 +619,20 @@ def _session(value: datetime, timezone_name: str) -> ScanSession:
     if time(16, 0) <= clock < time(20, 0):
         return "after_hours"
     return "closed"
+
+
+def _data_freshness_notes(*, as_of: datetime, price_time: datetime | None, session: ScanSession) -> list[str]:
+    if price_time is None:
+        return ["missing_price_timestamp"]
+    age_seconds = max(0, int((as_of - price_time).total_seconds()))
+    if session == "overnight" and age_seconds > 900:
+        return [
+            f"stale_overnight_price:{price_time.isoformat()}",
+            "schwab_rest_may_not_match_tos_24h_price",
+        ]
+    if session in {"premarket", "regular", "after_hours"} and age_seconds > 900:
+        return [f"stale_price:{price_time.isoformat()}"]
+    return []
 
 
 def _scan_id(value: datetime) -> str:
