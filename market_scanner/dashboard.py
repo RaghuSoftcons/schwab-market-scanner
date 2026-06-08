@@ -58,7 +58,7 @@ def dashboard_html() -> str:
     .title h1 { margin: 0; font-size: 23px; line-height: 1.1; letter-spacing: 0; }
     .title .sub { margin-top: 6px; color: var(--muted); font-size: 14px; }
     .top-actions { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; justify-content: flex-end; }
-    .layout { display: grid; grid-template-columns: minmax(320px, 360px) minmax(0, 1fr); gap: 6px; align-items: start; }
+    .layout { display: grid; grid-template-columns: minmax(500px, 540px) minmax(0, 1fr); gap: 6px; align-items: start; }
     .panel {
       background: var(--panel);
       border: 1px solid var(--line);
@@ -77,7 +77,7 @@ def dashboard_html() -> str:
     .panel-head h2 { margin: 0; font-size: 16px; }
     .panel-title { font-size: 16px; font-weight: 900; }
     .panel-body { padding: 14px 15px; }
-    .kpis { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; margin-bottom: 10px; }
+    .kpis { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 7px; margin-bottom: 10px; }
     .kpi { min-height: 72px; padding: 10px 9px; background: white; border: 1px solid var(--line); border-radius: 8px; }
     .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0; }
     .kpi .value { margin-top: 7px; font-size: 16px; font-weight: 900; overflow-wrap: anywhere; }
@@ -106,6 +106,7 @@ def dashboard_html() -> str:
     .notice.red { border-left-color: var(--red); background: var(--red-bg); color: var(--red); }
     .table-wrap { overflow-x: auto; }
     table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+    .table-wrap table { min-width: 620px; }
     th, td { text-align: left; padding: 11px 10px; border-bottom: 1px solid var(--line-soft); vertical-align: top; font-size: 14px; }
     th { color: var(--muted); font-size: 12px; text-transform: uppercase; background: #f8fafc; }
     tr.candidate-row { cursor: pointer; }
