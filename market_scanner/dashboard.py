@@ -276,7 +276,6 @@ def dashboard_html() -> str:
       </div>
       <div class="top-actions">
         <button class="ghost" onclick="load()">Refresh</button>
-        <button class="good" onclick="replayFriday()">Friday Replay</button>
         <button class="primary" onclick="runScan()">Run Scan</button>
       </div>
     </section>
@@ -539,14 +538,6 @@ async function runScan() {
   if (!opts) return;
   setStatus("Running live scan...");
   const result = await fetchJson("/scan/run", opts);
-  renderProtectedResult(result);
-}
-
-async function replayFriday() {
-  const opts = authOptions("POST");
-  if (!opts) return;
-  setStatus("Running Friday simulated replay...");
-  const result = await fetchJson("/scan/replay?as_of=2026-06-05&save=true&simulate_options=true", opts);
   renderProtectedResult(result);
 }
 
