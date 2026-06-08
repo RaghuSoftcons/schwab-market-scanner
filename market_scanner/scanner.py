@@ -218,16 +218,18 @@ class MarketScanner:
         selected_found = False
         updated_candidates: list[ScannerCandidate] = []
         for candidate in result.candidates:
-            reset_candidate = candidate.model_copy(
-                update={
-                    "proposals": [],
-                    "proposal_blocked_reasons": [],
-                }
-            )
             if candidate.symbol.upper() == normalized:
                 selected_found = True
+                reset_candidate = candidate.model_copy(
+                    update={
+                        "proposals": [],
+                        "proposal_blocked_reasons": [],
+                    }
+                )
                 reset_candidate = self._candidate_with_proposals(reset_candidate, scanned_at, "live")
-            updated_candidates.append(reset_candidate)
+                updated_candidates.append(reset_candidate)
+            else:
+                updated_candidates.append(candidate)
         if not selected_found:
             raise ValueError(f"Symbol {normalized} is not present in the latest scan.")
         return result.model_copy(
