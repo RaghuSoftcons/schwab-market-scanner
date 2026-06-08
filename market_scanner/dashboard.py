@@ -81,8 +81,16 @@ def dashboard_html() -> str:
     .kpi { min-height: 72px; padding: 10px 9px; background: white; border: 1px solid var(--line); border-radius: 8px; }
     .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0; }
     .kpi .value { margin-top: 7px; font-size: 16px; font-weight: 900; overflow-wrap: anywhere; }
-    .state-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; padding-top: 12px; border-top: 1px solid var(--line-soft); }
-    .state .value { margin-top: 5px; font-weight: 900; overflow-wrap: anywhere; }
+    .state-summary {
+      padding: 9px 15px 11px;
+      border-top: 1px solid var(--line-soft);
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.35;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
     .badges { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
     .badge {
       display: inline-flex;
@@ -252,7 +260,7 @@ def dashboard_html() -> str:
       .top-actions, .proposal-controls { justify-content: stretch; }
       .top-actions > *, .proposal-controls > * { flex: 1 1 auto; }
       input { min-width: 0; width: 100%; }
-      .state-grid, .candidate-summary, .proposal-stats, .freshness { grid-template-columns: 1fr; }
+      .candidate-summary, .proposal-stats, .freshness { grid-template-columns: 1fr; }
       .kpis { grid-template-columns: 1fr; }
       .account-row { grid-template-columns: auto 1fr; }
       .account-row .badge { grid-column: 1 / -1; }
@@ -288,14 +296,7 @@ def dashboard_html() -> str:
             <h2>Operating State</h2>
             <div class="badges" id="state-badges"></div>
           </div>
-          <div class="panel-body">
-            <div class="state-grid">
-              <div class="state"><div class="label">Scan</div><div class="value" id="state-scan">...</div></div>
-              <div class="state"><div class="label">Universe</div><div class="value" id="state-universe">...</div></div>
-              <div class="state"><div class="label">Session</div><div class="value" id="state-session">...</div></div>
-              <div class="state"><div class="label">Safety</div><div class="value" id="state-safety">...</div></div>
-            </div>
-          </div>
+          <div class="state-summary" id="state-summary" title="">Loading scanner state...</div>
         </section>
 
         <section class="panel">
@@ -584,10 +585,15 @@ function render() {
     badge(appState.settings.allowItm ? "ITM ALLOWED" : "ATM/OTM ONLY", appState.settings.allowItm ? "green" : "gray"),
   ].join("");
 
-  byId("state-scan").textContent = scan?.scan_id || "No scan";
-  byId("state-universe").textContent = (scan?.universe || config.symbols || []).join(", ") || "...";
-  byId("state-session").textContent = scan?.session || "...";
-  byId("state-safety").textContent = config.live_gate_open ? "Live Enabled" : "Protected";
+  const universe = scan?.universe || config.symbols || [];
+  const stateSummary = [
+    scan?.scan_id || "No scan",
+    `${universe.length} symbols`,
+    scan?.session || "...",
+    config.live_gate_open ? "Live Enabled" : "Protected",
+  ].join(" | ");
+  byId("state-summary").textContent = stateSummary;
+  byId("state-summary").title = universe.join(", ");
   byId("candidate-count").textContent = `${(scan?.top_candidates || []).length} shown`;
   setStatus(`Last update: ${shortTime(scan?.scanned_at || health.latest_scan_at)}`);
 
