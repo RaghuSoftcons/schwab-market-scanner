@@ -357,7 +357,7 @@ def dashboard_html() -> str:
               <span class="segmented" id="entry-offset-buttons" role="group" aria-label="Proposal entry offset"></span>
             </span>
             <span class="proposal-settings" aria-label="Target settings">
-              <span class="setting-label">Targets</span>
+              <span class="setting-label">Target %</span>
               <span class="target-inputs" id="target-inputs" role="group" aria-label="Proposal targets"></span>
               <button class="ghost" onclick="applyTargets()">Apply</button>
             </span>
@@ -407,6 +407,7 @@ let appState = {
   orderStatuses: {},
   soundArmed: false,
   settings: {
+    settingsVersion: 2,
     expiry: "NEXT_WEEK_FRIDAY",
     expiryChoices: ["0DTE", "1DTE", "2DTE", "3DTE", "THIS_FRIDAY", "NEXT_WEEK_FRIDAY"],
     allowItm: true,
@@ -414,7 +415,7 @@ let appState = {
     maxLossChoices: [200, 300, 400, 500],
     entryOffsetCents: 10,
     entryOffsetChoices: [10, 20, 30, 40, 50],
-    targets: [25, 50, 60]
+    targets: [20, 50, 60]
   }
 };
 
@@ -473,6 +474,10 @@ function loadDashboardSettings() {
     if (!raw) return;
     const saved = JSON.parse(raw);
     appState.settings = { ...appState.settings, ...saved };
+    if (!saved.settingsVersion && Array.isArray(saved.targets) && saved.targets.join(",") === "25,50,60") {
+      appState.settings.targets = [20, 50, 60];
+    }
+    appState.settings.settingsVersion = 2;
   } catch {
     return;
   }
@@ -521,9 +526,20 @@ function setAllowItm(value) {
 }
 function applyTargets() {
   const next = [0, 1, 2].map(index => Number(byId(`target-${index}`)?.value || 0)).filter(value => value > 0);
-  appState.settings.targets = next.length ? next : [25, 50, 60];
+  appState.settings.targets = next.length ? next : [20, 50, 60];
   saveDashboardSettings();
   render();
+}
+
+function proposalSettingsParams(includeOptions) {
+  const params = new URLSearchParams();
+  if (includeOptions !== undefined) params.set("include_options", includeOptions ? "true" : "false");
+  params.set("expiry_label", appState.settings.expiry || "NEXT_WEEK_FRIDAY");
+  params.set("allow_itm", appState.settings.allowItm ? "true" : "false");
+  params.set("max_loss", String(appState.settings.maxLoss || 300));
+  params.set("entry_offset_cents", String(appState.settings.entryOffsetCents || 10));
+  params.set("target_percentages", (appState.settings.targets || [20, 50, 60]).join(","));
+  return params;
 }
 
 async function load() {
@@ -558,7 +574,7 @@ async function runScan(includeOptions = true) {
     ? "Fetching fresh Schwab quotes, candles, and option chains..."
     : "Fetching fresh Schwab stock quotes and candles...";
   try {
-    const result = await fetchJson(`/scan/run?include_options=${includeOptions ? "true" : "false"}`, opts);
+    const result = await fetchJson(`/scan/run?${proposalSettingsParams(includeOptions).toString()}`, opts);
     renderProtectedResult(result);
   } finally {
     buttons.forEach(button => {
@@ -590,9 +606,9 @@ async function buildSelectedProposal(symbolOverride) {
   setStatus(`Building ${symbol} proposals...`);
   byId("proposal-status").textContent = `building ${symbol}`;
   byId("proposal-notice").className = "notice";
-  byId("proposal-notice").textContent = `Fetching Schwab option chains only for ${symbol}.`;
+  byId("proposal-notice").textContent = `Fetching ${appState.settings.expiry} Schwab option chains only for ${symbol}.`;
   try {
-    const result = await fetchJson(`/scan/selected/${encodeURIComponent(symbol)}`, opts);
+    const result = await fetchJson(`/scan/selected/${encodeURIComponent(symbol)}?${proposalSettingsParams().toString()}`, opts);
     renderProtectedResult(result);
   } finally {
     buttons.forEach(button => {
@@ -886,14 +902,12 @@ function adjustedProposalForQuantity(rawProposal) {
 
 function proposalExitTargets(proposal, quantity, entryLimit) {
   const existing = Array.isArray(proposal.exit_targets) ? proposal.exit_targets : [];
-  if (existing.length) {
-    return existing.map(target => ({
-      ...target,
-      tos_exit_order_line: target.tos_exit_order_line || tosExitOrderLine(proposal, Number(target.qty || 1), Number(target.target_limit_price || entryLimit)),
-    }));
-  }
+  const targetPercents = (appState.settings.targets || []).filter(value => Number(value) > 0);
+  const percents = targetPercents.length
+    ? targetPercents
+    : existing.map(target => Number(target.target_percent || 0)).filter(value => value > 0);
   let remaining = quantity;
-  return appState.settings.targets.slice(0, Math.min(3, quantity)).map((percent, index, targets) => {
+  return (percents.length ? percents : [20, 50, 60]).slice(0, Math.min(3, quantity)).map((percent, index, targets) => {
     const qty = index === targets.length - 1 ? remaining : 1;
     remaining -= qty;
     let targetLimit = roundMoney(Number(entryLimit || 0) * (1 + Number(percent || 0) / 100));
@@ -1069,7 +1083,7 @@ async function refreshProposalOrderStatus(proposalId, button) {
   }
   byId("proposal-status").textContent = "checking order";
   try {
-    const targets = encodeURIComponent((appState.settings.targets || [25, 50, 60]).join(","));
+    const targets = encodeURIComponent((appState.settings.targets || [20, 50, 60]).join(","));
     const result = await fetchJson(`/proposals/${encodeURIComponent(proposalId)}/orders/status?target_percentages=${targets}`);
     if (!result.ok) {
       const detail = result.data?.detail || result.data?.body || `HTTP ${result.status}`;

@@ -4,6 +4,7 @@ from datetime import date, datetime, timezone
 from types import MethodType, SimpleNamespace
 from zoneinfo import ZoneInfo
 
+from nt_schwab_bridge.config import OptionPlannerConfig
 from nt_schwab_bridge.models import OptionContractSnapshot, OptionProposal, OptionProposalLeg
 
 from market_scanner.app import _is_simulated_proposal
@@ -13,6 +14,8 @@ from market_scanner.orders import schwab_order_payload
 from market_scanner.schwab_ext import _parse_quote
 from market_scanner.scanner import (
     MarketScanner,
+    ProposalBuildSettings,
+    _planner_config_for_build_settings,
     _session,
     _signal_record,
     _simulated_fallback_proposals,
@@ -234,7 +237,8 @@ def test_selected_proposal_build_preserves_other_built_symbols():
     scanner = MarketScanner.__new__(MarketScanner)
     scanner.settings = SimpleNamespace(scanner=SimpleNamespace(top_n=10))
 
-    def fake_candidate_with_proposals(self, candidate, scanned_at, proposal_mode):
+    def fake_candidate_with_proposals(self, candidate, scanned_at, proposal_mode, build_settings=None):
+        assert build_settings is None
         return candidate.model_copy(
             update={
                 "proposals": [_test_proposal("new_amd", "AMD")],
@@ -278,6 +282,32 @@ def test_selected_proposal_build_preserves_other_built_symbols():
     by_symbol = {candidate.symbol: candidate for candidate in updated.candidates}
     assert [proposal.id for proposal in by_symbol["MU"].proposals] == ["old_mu"]
     assert [proposal.id for proposal in by_symbol["AMD"].proposals] == ["new_amd"]
+
+
+def test_proposal_build_settings_override_planner_controls():
+    config = OptionPlannerConfig(
+        allowed_symbols=["AAPL"],
+        expiries=["1DTE"],
+        max_debit_per_trade=500,
+        marketable_limit_offset=0.30,
+        allow_in_the_money_primary=False,
+        exit_target_percentages=[25, 50, 60],
+    )
+    settings = ProposalBuildSettings(
+        expiry_labels=("THIS_FRIDAY",),
+        allow_in_the_money_primary=True,
+        max_debit_per_trade=300,
+        marketable_limit_offset=0.10,
+        exit_target_percentages=(20, 50, 60),
+    )
+
+    updated = _planner_config_for_build_settings(config, settings)
+
+    assert updated.expiries == ["THIS_FRIDAY"]
+    assert updated.allow_in_the_money_primary is True
+    assert updated.max_debit_per_trade == 300
+    assert updated.marketable_limit_offset == 0.10
+    assert updated.exit_target_percentages == [20, 50, 60]
 
 
 def test_gap_up_candidate_gets_call_bias_when_regime_not_bearish():

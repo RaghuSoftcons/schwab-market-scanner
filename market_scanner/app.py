@@ -34,7 +34,7 @@ from market_scanner.models import (
     SendProposalResponse,
 )
 from market_scanner.orders import schwab_order_payload
-from market_scanner.scanner import MarketScanner
+from market_scanner.scanner import MarketScanner, ProposalBuildSettings
 from market_scanner.storage import ScannerStorage
 
 
@@ -158,8 +158,25 @@ async def accounts(_: None = Depends(_require_api_key)) -> dict:
 async def run_scan(
     _: None = Depends(_require_api_key),
     include_options: bool = True,
+    expiry_label: str | None = None,
+    allow_itm: bool | None = None,
+    max_loss: float | None = Query(default=None, ge=0),
+    entry_offset_cents: float | None = Query(default=None, ge=0),
+    target_percentages: str | None = None,
 ) -> ScanResult:
-    result = await asyncio.to_thread(scanner.scan, include_options=include_options)
+    result = await asyncio.to_thread(
+        scanner.scan,
+        include_options=include_options,
+        build_settings=_proposal_build_settings(
+            expiry_label=expiry_label,
+            allow_itm=allow_itm,
+            max_loss=max_loss,
+            entry_offset_cents=entry_offset_cents,
+            target_percentages=target_percentages,
+        )
+        if include_options
+        else None,
+    )
     _rank_candidates(result)
     storage.save_scan(result)
     return result
@@ -169,6 +186,11 @@ async def run_scan(
 async def build_selected_scan_proposals(
     symbol: str,
     _: None = Depends(_require_api_key),
+    expiry_label: str | None = None,
+    allow_itm: bool | None = None,
+    max_loss: float | None = Query(default=None, ge=0),
+    entry_offset_cents: float | None = Query(default=None, ge=0),
+    target_percentages: str | None = None,
 ) -> ScanResult:
     normalized = symbol.upper().replace("$", "").strip()
     if not normalized:
@@ -177,13 +199,32 @@ async def build_selected_scan_proposals(
     if result is None:
         result = await asyncio.to_thread(scanner.scan, include_options=False)
         _rank_candidates(result)
+    build_settings = _proposal_build_settings(
+        expiry_label=expiry_label,
+        allow_itm=allow_itm,
+        max_loss=max_loss,
+        entry_offset_cents=entry_offset_cents,
+        target_percentages=target_percentages,
+    )
     try:
-        result = await asyncio.to_thread(scanner.build_selected_candidate_proposals, result, normalized)
+        result = await asyncio.to_thread(
+            scanner.build_selected_candidate_proposals,
+            result,
+            normalized,
+            None,
+            build_settings,
+        )
     except ValueError:
         result = await asyncio.to_thread(scanner.scan, include_options=False)
         _rank_candidates(result)
         try:
-            result = await asyncio.to_thread(scanner.build_selected_candidate_proposals, result, normalized)
+            result = await asyncio.to_thread(
+                scanner.build_selected_candidate_proposals,
+                result,
+                normalized,
+                None,
+                build_settings,
+            )
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
     _rank_candidates(result)
@@ -748,7 +789,7 @@ def _account_order_events(event: dict) -> list[dict]:
 
 def _parse_target_percentages(value: str | None) -> list[float]:
     if not value:
-        return [25.0, 50.0, 60.0]
+        return [20.0, 50.0, 60.0]
     parsed: list[float] = []
     for part in value.split(","):
         try:
@@ -757,7 +798,35 @@ def _parse_target_percentages(value: str | None) -> list[float]:
             continue
         if percent > 0:
             parsed.append(percent)
-    return parsed[:3] or [25.0, 50.0, 60.0]
+    return parsed[:3] or [20.0, 50.0, 60.0]
+
+
+def _proposal_build_settings(
+    *,
+    expiry_label: str | None,
+    allow_itm: bool | None,
+    max_loss: float | None,
+    entry_offset_cents: float | None,
+    target_percentages: str | None,
+) -> ProposalBuildSettings:
+    expiries = tuple(
+        dict.fromkeys(
+            item.upper().strip().replace(" ", "_")
+            for item in (expiry_label or "").split(",")
+            if item and item.strip()
+        )
+    )
+    targets = tuple(_parse_target_percentages(target_percentages)) if target_percentages else ()
+    entry_offset = None
+    if entry_offset_cents is not None:
+        entry_offset = round(float(entry_offset_cents) / 100, 4)
+    return ProposalBuildSettings(
+        expiry_labels=expiries,
+        allow_in_the_money_primary=allow_itm,
+        max_debit_per_trade=float(max_loss) if max_loss is not None else None,
+        marketable_limit_offset=entry_offset,
+        exit_target_percentages=targets,
+    )
 
 
 def _extract_schwab_fill(order: dict, proposal: OptionProposal | None = None) -> dict:
