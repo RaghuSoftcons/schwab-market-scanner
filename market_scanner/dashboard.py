@@ -276,6 +276,7 @@ def dashboard_html() -> str:
       </div>
       <div class="top-actions">
         <button class="ghost" onclick="load()">Refresh</button>
+        <button class="ghost" id="refresh-prices-button" data-run-scan-button onclick="runScan(false)">Refresh Prices</button>
         <button class="primary" id="run-scan-button" data-run-scan-button onclick="runScan(true)">Run Scan</button>
       </div>
     </section>
@@ -356,7 +357,6 @@ def dashboard_html() -> str:
             <button class="ghost" onclick="testSound()">Test Sound</button>
             <button class="ghost" onclick="showFirstProposal()">Show Proposal</button>
             <button class="ghost" disabled>Mark Reviewed</button>
-            <button class="ghost" id="refresh-prices-button" data-run-scan-button onclick="runScan(false)">Refresh Prices</button>
           </div>
         </div>
         <div class="panel-body">
