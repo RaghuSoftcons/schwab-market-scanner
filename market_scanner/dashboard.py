@@ -77,6 +77,8 @@ def dashboard_html() -> str:
     .panel-head h2 { margin: 0; font-size: 16px; }
     .panel-title { font-size: 16px; font-weight: 900; }
     .panel-body { padding: 14px 15px; }
+    .candidate-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+    .candidate-actions button { padding: 7px 10px; font-size: 13px; }
     .kpis { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 7px; margin-bottom: 10px; }
     .kpi { min-height: 72px; padding: 10px 9px; background: white; border: 1px solid var(--line); border-radius: 8px; }
     .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0; }
@@ -275,8 +277,6 @@ def dashboard_html() -> str:
         <div class="sub" id="last-update">Loading...</div>
       </div>
       <div class="top-actions">
-        <button class="ghost" onclick="load()">Refresh</button>
-        <button class="ghost" id="refresh-prices-button" data-run-scan-button onclick="runScan(false)">Refresh Prices</button>
         <button class="primary" id="run-scan-button" data-run-scan-button onclick="runScan(true)">Run Scan</button>
       </div>
     </section>
@@ -302,7 +302,10 @@ def dashboard_html() -> str:
         <section class="panel">
           <div class="panel-head">
             <h2>Top Candidates</h2>
-            <div class="muted" id="candidate-count">0 shown</div>
+            <div class="candidate-actions">
+              <div class="muted" id="candidate-count">0 shown</div>
+              <button class="ghost" id="refresh-prices-button" data-run-scan-button onclick="runScan(false)">Refresh Prices</button>
+            </div>
           </div>
           <div class="table-wrap">
             <table>

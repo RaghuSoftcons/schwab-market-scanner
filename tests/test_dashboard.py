@@ -30,3 +30,4 @@ def test_dashboard_contains_reference_proposal_controls() -> None:
     assert "Unlock" not in response.text
     assert "api-key-input" not in response.text
     assert "Refresh Proposal" not in response.text
+    assert 'onclick="load()">Refresh</button>' not in response.text
