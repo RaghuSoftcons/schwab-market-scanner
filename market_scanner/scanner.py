@@ -322,7 +322,7 @@ def compute_metrics(
     ]
     usable_bars = day_bars or intraday_sorted
     latest = usable_bars[-1] if usable_bars else None
-    quote_price = quote.last if quote and quote.last and quote.last > 0 else None
+    quote_price = _quote_reference_price(quote)
     current_price = quote_price or (latest.close if latest else None)
     price_time = quote.timestamp if quote_price and quote and quote.timestamp else (latest.timestamp if latest else None)
     data_notes = _data_freshness_notes(
@@ -362,6 +362,20 @@ def compute_metrics(
         latest_bar_time=latest.timestamp if latest else None,
         data_notes=data_notes,
     )
+
+
+def _quote_reference_price(quote: EquityQuote | None) -> float | None:
+    if quote is None:
+        return None
+    if quote.bid is not None and quote.ask is not None and quote.bid > 0 and quote.ask >= quote.bid:
+        midpoint = (quote.bid + quote.ask) / 2
+        spread_pct = ((quote.ask - quote.bid) / midpoint) * 100 if midpoint else 100
+        if spread_pct <= 2:
+            return midpoint
+    for value in (quote.mark, quote.last):
+        if value is not None and value > 0:
+            return value
+    return None
 
 
 def classify_candidate(

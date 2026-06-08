@@ -7,7 +7,7 @@ from nt_schwab_bridge.models import OptionContractSnapshot, OptionProposal, Opti
 
 from market_scanner.app import _is_simulated_proposal
 from market_scanner.config import _split_csv
-from market_scanner.models import Candle, MarketRegime, TickerMetrics
+from market_scanner.models import Candle, EquityQuote, MarketRegime, TickerMetrics
 from market_scanner.orders import schwab_order_payload
 from market_scanner.schwab_ext import _parse_quote
 from market_scanner.scanner import (
@@ -98,6 +98,69 @@ def test_schwab_extended_quote_time_is_parsed():
 
     assert quote.last == 207.74
     assert quote.timestamp is not None
+
+
+def test_schwab_quote_parser_uses_newer_quote_when_extended_is_stale():
+    quote = _parse_quote(
+        "MU",
+        {
+            "extended": {
+                "bidPrice": 0.0,
+                "askPrice": 0.0,
+                "lastPrice": 895.9,
+                "mark": 0.0,
+                "quoteTime": 0,
+                "tradeTime": 1780905599000,
+            },
+            "quote": {
+                "bidPrice": 898.0,
+                "askPrice": 899.2,
+                "lastPrice": 898.15,
+                "mark": 898.0,
+                "quoteTime": 1780910917730,
+                "tradeTime": 1780910917980,
+            },
+        },
+    )
+
+    assert quote.bid == 898.0
+    assert quote.ask == 899.2
+    assert quote.last == 898.15
+    assert quote.mark == 898.0
+
+
+def test_metrics_use_bid_ask_midpoint_for_live_quote_price():
+    tz = ZoneInfo("America/New_York")
+    as_of = datetime(2026, 6, 8, 5, 30, tzinfo=tz).astimezone(timezone.utc)
+    daily = [
+        Candle(
+            timestamp=datetime(2026, 6, 5, 16, 0, tzinfo=tz).astimezone(timezone.utc),
+            open=860,
+            high=875,
+            low=850,
+            close=864,
+            volume=1_000_000,
+        )
+    ]
+    quote = EquityQuote(
+        symbol="MU",
+        bid=899.05,
+        ask=899.55,
+        last=895.9,
+        timestamp=as_of,
+    )
+
+    metrics = compute_metrics(
+        symbol="MU",
+        quote=quote,
+        intraday=[],
+        daily=daily,
+        as_of=as_of,
+        timezone_name="America/New_York",
+    )
+
+    assert metrics.current_price == 899.3
+    assert metrics.gap_pct == 4.0856
 
 
 def test_simulated_fallback_proposal_is_marked_sim_only():

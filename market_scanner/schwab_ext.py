@@ -95,13 +95,13 @@ def _parse_quote(symbol: str, payload: dict[str, Any]) -> EquityQuote:
     quote = payload.get("quote") if isinstance(payload.get("quote"), dict) else payload
     regular = payload.get("regular") if isinstance(payload.get("regular"), dict) else {}
     extended = payload.get("extended") if isinstance(payload.get("extended"), dict) else {}
-    values = [extended, quote, regular, payload]
+    values = _ordered_quote_nodes(extended, quote, regular, payload)
 
-    def first_float(keys: tuple[str, ...]) -> float | None:
+    def first_positive_float(keys: tuple[str, ...]) -> float | None:
         for node in values:
             for key in keys:
                 parsed = _optional_float(node.get(key))
-                if parsed is not None:
+                if parsed is not None and parsed > 0:
                     return parsed
         return None
 
@@ -130,9 +130,9 @@ def _parse_quote(symbol: str, payload: dict[str, Any]) -> EquityQuote:
         if timestamp_raw:
             break
 
-    bid = first_float(("bidPrice", "bid"))
-    ask = first_float(("askPrice", "ask"))
-    last = first_float(
+    bid = first_positive_float(("bidPrice", "bid"))
+    ask = first_positive_float(("askPrice", "ask"))
+    last = first_positive_float(
         (
             "lastPrice",
             "last",
@@ -142,7 +142,7 @@ def _parse_quote(symbol: str, payload: dict[str, Any]) -> EquityQuote:
             "markPrice",
         )
     )
-    mark = first_float(("mark", "markPrice", "lastPrice", "last"))
+    mark = first_positive_float(("mark", "markPrice", "lastPrice", "last"))
     return EquityQuote(
         symbol=symbol.upper(),
         bid=bid,
@@ -153,6 +153,32 @@ def _parse_quote(symbol: str, payload: dict[str, Any]) -> EquityQuote:
         timestamp=_timestamp_from_epoch(timestamp_raw) if timestamp_raw else None,
         raw=payload,
     )
+
+
+def _ordered_quote_nodes(*nodes: dict[str, Any]) -> list[dict[str, Any]]:
+    decorated: list[tuple[float, int, dict[str, Any]]] = []
+    for priority, node in enumerate(nodes):
+        if isinstance(node, dict) and node:
+            decorated.append((_quote_node_epoch(node), -priority, node))
+    return [node for _, _, node in sorted(decorated, reverse=True)]
+
+
+def _quote_node_epoch(node: dict[str, Any]) -> float:
+    for key in (
+        "quoteTimeInLong",
+        "tradeTimeInLong",
+        "regularMarketTradeTimeInLong",
+        "quoteTime",
+        "tradeTime",
+        "regularMarketTradeTime",
+        "lastPriceTime",
+    ):
+        if node.get(key):
+            try:
+                return float(node[key])
+            except (TypeError, ValueError):
+                continue
+    return 0
 
 
 def _parse_candle(item: dict[str, Any]) -> Candle:
