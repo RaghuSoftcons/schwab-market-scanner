@@ -125,8 +125,11 @@ async def accounts(_: None = Depends(_require_api_key)) -> dict:
 
 
 @app.post("/scan/run", response_model=ScanResult)
-async def run_scan(_: None = Depends(_require_api_key)) -> ScanResult:
-    result = await asyncio.to_thread(scanner.scan)
+async def run_scan(
+    _: None = Depends(_require_api_key),
+    include_options: bool = True,
+) -> ScanResult:
+    result = await asyncio.to_thread(scanner.scan, include_options=include_options)
     _rank_candidates(result)
     storage.save_scan(result)
     return result

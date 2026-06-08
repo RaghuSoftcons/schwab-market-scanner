@@ -276,7 +276,7 @@ def dashboard_html() -> str:
       </div>
       <div class="top-actions">
         <button class="ghost" onclick="load()">Refresh</button>
-        <button class="primary" id="run-scan-button" data-run-scan-button onclick="runScan()">Run Scan</button>
+        <button class="primary" id="run-scan-button" data-run-scan-button onclick="runScan(true)">Run Scan</button>
       </div>
     </section>
 
@@ -356,7 +356,7 @@ def dashboard_html() -> str:
             <button class="ghost" onclick="testSound()">Test Sound</button>
             <button class="ghost" onclick="showFirstProposal()">Show Proposal</button>
             <button class="ghost" disabled>Mark Reviewed</button>
-            <button class="ghost" id="refresh-prices-button" data-run-scan-button onclick="runScan()">Refresh Prices</button>
+            <button class="ghost" id="refresh-prices-button" data-run-scan-button onclick="runScan(false)">Refresh Prices</button>
           </div>
         </div>
         <div class="panel-body">
@@ -533,7 +533,7 @@ async function load() {
   await loadAccounts({ force: false });
 }
 
-async function runScan() {
+async function runScan(includeOptions = true) {
   const opts = authOptions("POST");
   if (!opts) return;
   const buttons = Array.from(document.querySelectorAll("[data-run-scan-button]"));
@@ -542,12 +542,14 @@ async function runScan() {
     button.disabled = true;
     button.textContent = button.id === "refresh-prices-button" ? "Refreshing..." : "Scanning...";
   });
-  setStatus("Running live scan...");
-  byId("proposal-status").textContent = "scanning";
+  setStatus(includeOptions ? "Running full scan..." : "Refreshing prices...");
+  byId("proposal-status").textContent = includeOptions ? "scanning" : "refreshing prices";
   byId("proposal-notice").className = "notice";
-  byId("proposal-notice").textContent = "Fetching fresh Schwab quotes, candles, and option chains...";
+  byId("proposal-notice").textContent = includeOptions
+    ? "Fetching fresh Schwab quotes, candles, and option chains..."
+    : "Fetching fresh Schwab stock quotes and candles...";
   try {
-    const result = await fetchJson("/scan/run", opts);
+    const result = await fetchJson(`/scan/run?include_options=${includeOptions ? "true" : "false"}`, opts);
     renderProtectedResult(result);
   } finally {
     buttons.forEach(button => {
@@ -648,7 +650,7 @@ function renderProposal(candidate) {
     byId("proposal-subtitle").textContent = "No candidate selected.";
     byId("proposal-status").textContent = "no proposal";
     byId("proposal-notice").className = "notice";
-    byId("proposal-notice").textContent = "Run a scan or Friday replay to populate proposals.";
+    byId("proposal-notice").textContent = "Run a full scan to populate proposals.";
     byId("proposal-cards").innerHTML = `<div class="empty">No proposal selected.</div>`;
     renderQuoteFreshness([]);
     setMetrics(null);
