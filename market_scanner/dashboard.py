@@ -276,7 +276,7 @@ def dashboard_html() -> str:
       </div>
       <div class="top-actions">
         <button class="ghost" onclick="load()">Refresh</button>
-        <button class="primary" onclick="runScan()">Run Scan</button>
+        <button class="primary" id="run-scan-button" onclick="runScan()">Run Scan</button>
       </div>
     </section>
 
@@ -536,9 +536,24 @@ async function load() {
 async function runScan() {
   const opts = authOptions("POST");
   if (!opts) return;
+  const button = byId("run-scan-button");
+  if (button) {
+    button.disabled = true;
+    button.textContent = "Scanning...";
+  }
   setStatus("Running live scan...");
-  const result = await fetchJson("/scan/run", opts);
-  renderProtectedResult(result);
+  byId("proposal-status").textContent = "scanning";
+  byId("proposal-notice").className = "notice";
+  byId("proposal-notice").textContent = "Fetching fresh Schwab quotes, candles, and option chains...";
+  try {
+    const result = await fetchJson("/scan/run", opts);
+    renderProtectedResult(result);
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = "Run Scan";
+    }
+  }
 }
 
 function renderProtectedResult(result) {

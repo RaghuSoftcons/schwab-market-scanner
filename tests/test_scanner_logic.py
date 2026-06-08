@@ -9,6 +9,7 @@ from market_scanner.app import _is_simulated_proposal
 from market_scanner.config import _split_csv
 from market_scanner.models import Candle, MarketRegime, TickerMetrics
 from market_scanner.orders import schwab_order_payload
+from market_scanner.schwab_ext import _parse_quote
 from market_scanner.scanner import (
     _session,
     _signal_record,
@@ -77,6 +78,26 @@ def test_sunday_evening_is_overnight_session():
     as_of = datetime(2026, 6, 7, 20, 15, tzinfo=tz)
 
     assert _session(as_of, "America/New_York") == "overnight"
+
+
+def test_schwab_extended_quote_time_is_parsed():
+    quote = _parse_quote(
+        "NVDA",
+        {
+            "extended": {
+                "bidPrice": 207.66,
+                "askPrice": 207.78,
+                "lastPrice": 207.74,
+                "quoteTime": 1780880306406,
+                "tradeTime": 1780880305000,
+            },
+            "quote": {"lastPrice": 204.03},
+            "regular": {"regularMarketLastPrice": 205.1},
+        },
+    )
+
+    assert quote.last == 207.74
+    assert quote.timestamp is not None
 
 
 def test_simulated_fallback_proposal_is_marked_sim_only():

@@ -115,7 +115,15 @@ def _parse_quote(symbol: str, payload: dict[str, Any]) -> EquityQuote:
 
     timestamp_raw = None
     for node in values:
-        for key in ("quoteTimeInLong", "tradeTimeInLong", "regularMarketTradeTimeInLong", "lastPriceTime"):
+        for key in (
+            "quoteTimeInLong",
+            "tradeTimeInLong",
+            "regularMarketTradeTimeInLong",
+            "quoteTime",
+            "tradeTime",
+            "regularMarketTradeTime",
+            "lastPriceTime",
+        ):
             if node.get(key):
                 timestamp_raw = node.get(key)
                 break
