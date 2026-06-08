@@ -47,3 +47,18 @@ class ScannerStorage:
         }
         with self.order_audit_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(payload, default=str) + "\n")
+
+    def list_order_events(self) -> list[dict[str, Any]]:
+        if not self.order_audit_path.exists():
+            return []
+        events: list[dict[str, Any]] = []
+        for line in self.order_audit_path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(payload, dict):
+                events.append(payload)
+        return events

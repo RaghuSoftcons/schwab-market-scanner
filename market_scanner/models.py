@@ -117,3 +117,38 @@ class SendProposalResponse(BaseModel):
     selected_account_ids: list[str]
     account_results: list[AccountSendResult] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
+
+
+ProposalOrderFillStatus = Literal["not_sent", "unknown", "open", "partial", "filled", "canceled", "rejected", "error"]
+
+
+class ProposalExitTargetPreview(BaseModel):
+    target_index: int = Field(ge=0)
+    qty: int = Field(ge=1)
+    target_percent: float = Field(gt=0)
+    entry_fill_price: float = Field(gt=0)
+    target_limit_price: float = Field(gt=0)
+    estimated_profit: float = Field(ge=0)
+    tos_exit_order_line: str = ""
+
+
+class ProposalOrderFillAccountStatus(BaseModel):
+    account_id: str
+    account_label: str
+    broker_order_id: str | None = None
+    status: ProposalOrderFillStatus = "unknown"
+    schwab_status: str = ""
+    filled_quantity: float = Field(default=0, ge=0)
+    remaining_quantity: float | None = Field(default=None, ge=0)
+    average_fill_price: float | None = Field(default=None, gt=0)
+    order_payload: dict[str, Any] | None = None
+    exit_targets: list[ProposalExitTargetPreview] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
+class ProposalOrderStatusResponse(BaseModel):
+    proposal_id: str
+    generated_at: datetime
+    account_statuses: list[ProposalOrderFillAccountStatus] = Field(default_factory=list)
+    has_filled_accounts: bool = False
+    notes: list[str] = Field(default_factory=list)

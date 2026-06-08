@@ -79,6 +79,9 @@ def dashboard_html() -> str:
     .panel-body { padding: 14px 15px; }
     .candidate-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
     .candidate-actions button { padding: 7px 10px; font-size: 13px; }
+    .build-cell { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+    .row-build { padding: 6px 8px; font-size: 12px; font-weight: 900; color: var(--blue); }
+    .build-cell .badge { min-height: 24px; padding: 3px 7px; font-size: 11px; }
     .kpis { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 7px; margin-bottom: 10px; }
     .kpi { min-height: 72px; padding: 10px 9px; background: white; border: 1px solid var(--line); border-radius: 8px; }
     .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0; }
@@ -245,6 +248,8 @@ def dashboard_html() -> str:
       background: white;
       font-size: 12px;
     }
+    .account-row.balance-ok { background: var(--green-bg); border-color: #bbf7d0; }
+    .account-row.balance-low { background: var(--red-bg); border-color: #fecdd3; }
     .account-row.disabled { background: var(--red-bg); border-color: #fecdd3; }
     .account-row input { min-width: 0; width: 18px; height: 18px; accent-color: var(--blue); }
     .send-status { margin-top: 8px; font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
@@ -277,7 +282,7 @@ def dashboard_html() -> str:
         <div class="sub" id="last-update">Loading...</div>
       </div>
       <div class="top-actions">
-        <button class="primary" id="build-selected-button" data-selected-build-button onclick="buildSelectedProposal()">Build Selected</button>
+        <button class="primary" id="build-all-button" data-run-scan-button onclick="runScan(true)">Build All</button>
       </div>
     </section>
 
@@ -316,7 +321,7 @@ def dashboard_html() -> str:
                   <th style="width: 13%;">Price</th>
                   <th style="width: 12%;">Gap</th>
                   <th style="width: 16%;">PM Vol</th>
-                  <th style="width: 14%;">Proposals</th>
+                  <th style="width: 18%;">Build</th>
                   <th>Read</th>
                 </tr>
               </thead>
@@ -399,6 +404,7 @@ let appState = {
   accountsLoadedForKey: "",
   selectedAccountIds: new Set(),
   sendResponses: {},
+  orderStatuses: {},
   soundArmed: false,
   settings: {
     expiry: "NEXT_WEEK_FRIDAY",
@@ -562,21 +568,24 @@ async function runScan(includeOptions = true) {
   }
 }
 
-async function buildSelectedProposal() {
-  const symbol = appState.selectedSymbol;
+async function buildSelectedProposal(symbolOverride) {
+  const symbol = symbolOverride || appState.selectedSymbol;
   if (!symbol) {
     byId("proposal-status").textContent = "select a symbol";
     byId("proposal-notice").className = "notice";
     byId("proposal-notice").textContent = "Select a candidate on the left before building proposals.";
     return;
   }
+  appState.selectedSymbol = symbol;
+  appState.selectedProposalIndex = 0;
+  render();
   const opts = authOptions("POST");
   if (!opts) return;
-  const buttons = Array.from(document.querySelectorAll("[data-selected-build-button]"));
+  const buttons = Array.from(document.querySelectorAll("[data-build-candidate-button]"));
   buttons.forEach(button => {
     button.dataset.originalText = button.dataset.originalText || button.textContent;
     button.disabled = true;
-    button.textContent = `Building ${symbol}...`;
+    if (button.dataset.symbol === symbol) button.textContent = `Building ${symbol}...`;
   });
   setStatus(`Building ${symbol} proposals...`);
   byId("proposal-status").textContent = `building ${symbol}`;
@@ -588,9 +597,14 @@ async function buildSelectedProposal() {
   } finally {
     buttons.forEach(button => {
       button.disabled = false;
-      button.textContent = button.dataset.originalText || "Build Selected";
+      button.textContent = button.dataset.originalText || button.textContent;
     });
   }
+}
+
+function buildCandidate(event, symbol) {
+  if (event) event.stopPropagation();
+  buildSelectedProposal(symbol);
 }
 
 function renderProtectedResult(result) {
@@ -659,10 +673,9 @@ function render() {
 }
 
 function renderBuildButton() {
-  const buildButton = byId("build-selected-button");
+  const buildButton = byId("build-all-button");
   if (!buildButton) return;
-  buildButton.disabled = !appState.selectedSymbol;
-  buildButton.textContent = appState.selectedSymbol ? `Build ${appState.selectedSymbol}` : "Build Selected";
+  buildButton.textContent = "Build All";
   buildButton.dataset.originalText = buildButton.textContent;
 }
 
@@ -673,15 +686,19 @@ function candidateRow(candidate) {
   const blockedReasons = candidate.proposal_blocked_reasons || [];
   const tone = candidate.action === "CALL_BIAS" ? "green" : candidate.action === "PUT_BIAS" ? "amber" : "gray";
   const selectedAttr = esc(candidate.symbol).replace(/'/g, "\\'");
-  const proposalBadgeText = proposals.length ? `${proposals.length} ready` : blockedReasons.length ? "blocked" : "not built";
-  const proposalBadgeTone = proposals.length ? "green" : blockedReasons.length ? "amber" : "gray";
+  const buildLabel = proposals.length ? `Rebuild ${candidate.symbol}` : `Build ${candidate.symbol}`;
+  const buildBadge = proposals.length
+    ? badge(`${proposals.length} ready`, "green")
+    : blockedReasons.length
+      ? badge("blocked", "amber")
+      : "";
   return `<tr class="candidate-row${selected}" onclick="selectCandidate('${selectedAttr}')">
     <td><div class="sym">${esc(candidate.symbol)}</div><div class="tiny">rank ${candidate.rank || ""}</div></td>
     <td>${badge(candidate.action || "WATCH", tone)}</td>
     <td>${plainMoney(metrics.current_price)}</td>
     <td class="${Number(metrics.gap_pct || 0) >= 0 ? "good-text" : "bad-text"}">${pct(metrics.gap_pct)}</td>
     <td>${intFmt(metrics.premarket_volume)}</td>
-    <td>${badge(proposalBadgeText, proposalBadgeTone)}</td>
+    <td><div class="build-cell"><button class="ghost row-build" data-build-candidate-button data-symbol="${esc(candidate.symbol)}" onclick="buildCandidate(event, '${selectedAttr}')">${esc(buildLabel)}</button>${buildBadge}</div></td>
     <td><div>${esc((candidate.reasons || []).join(", ") || "--")}</div><div class="tiny">${esc((candidate.warnings || []).join(", "))}</div></td>
   </tr>`;
 }
@@ -987,26 +1004,124 @@ function proposalCard(rawProposal, index) {
   </article>`;
 }
 
+function firstFilledExitTarget(orderStatus, targetIndex) {
+  if (!orderStatus || !Array.isArray(orderStatus.account_statuses)) return null;
+  for (const account of orderStatus.account_statuses) {
+    if (!["filled", "partial"].includes(account.status) || !account.average_fill_price) continue;
+    const target = (account.exit_targets || []).find(item => Number(item.target_index) === Number(targetIndex));
+    if (target) return { ...target, account };
+  }
+  return null;
+}
+
+function renderOrderStatusLine(orderStatus) {
+  if (!orderStatus) return `<div class="order-note">Entry order fill has not been checked yet.</div>`;
+  const rows = (orderStatus.account_statuses || []).map(account => {
+    const fill = account.average_fill_price
+      ? `fill ${Number(account.average_fill_price).toFixed(2)} x ${Number(account.filled_quantity || 0).toLocaleString()}`
+      : `filled ${Number(account.filled_quantity || 0).toLocaleString()}`;
+    const broker = account.broker_order_id ? `order ${account.broker_order_id}` : "order id missing";
+    const notes = (account.notes || []).join(" | ");
+    const statusTone = ["filled", "partial"].includes(account.status) ? "good-text" : account.status === "error" ? "bad-text" : "warn-text";
+    return `<div><strong>${esc(account.account_label || account.account_id)}</strong> <span class="${statusTone}">${esc(account.status || "unknown")}</span> | ${esc(broker)} | ${esc(fill)}${notes ? ` | ${esc(notes)}` : ""}</div>`;
+  }).join("");
+  const notes = (orderStatus.notes || []).map(note => `<div>${esc(note)}</div>`).join("");
+  if (!rows && !notes) return `<div class="order-note">No submitted entry order was found for this proposal yet.</div>`;
+  return `<div class="order-note">${rows || notes}</div>`;
+}
+
 function renderExitPlan(proposal, cardIndex) {
   const targets = Array.isArray(proposal.exit_targets) ? proposal.exit_targets : [];
   if (!targets.length) return "";
+  const orderStatus = appState.orderStatuses[proposal.id] || null;
+  const hasFill = Boolean(orderStatus?.has_filled_accounts);
   const rows = targets.map((target, index) => {
+    const filledTarget = firstFilledExitTarget(orderStatus, index);
+    const source = filledTarget || target;
     const qty = Number(target.qty || 1);
-    const percent = Number(target.target_percent || 0);
-    const limit = Number(target.target_limit_price || 0);
-    const profit = Number(target.estimated_profit || 0);
-    const sellLine = target.tos_exit_order_line || tosExitOrderLine(proposal, qty, limit);
+    const filledQty = Number(source.qty || qty || 1);
+    const percent = Number(source.target_percent || 0);
+    const limit = Number(source.target_limit_price || 0);
+    const profit = Number(source.estimated_profit || 0);
+    const sellLine = source.tos_exit_order_line || tosExitOrderLine(proposal, filledQty, limit);
+    const rowLabel = filledTarget
+      ? `${filledQty} @ +${percent.toLocaleString(undefined, { maximumFractionDigits: 4 })}% -> ${limit.toFixed(2)} | est +$${profit.toFixed(2)} | ${filledTarget.account.account_label}`
+      : `${qty} @ +${percent.toLocaleString(undefined, { maximumFractionDigits: 4 })}% -> ${limit.toFixed(2)} | est +$${profit.toFixed(2)} | planned`;
     return `<div class="exit-target">
-      ${esc(`${qty} @ +${percent.toLocaleString(undefined, { maximumFractionDigits: 4 })}% -> ${limit.toFixed(2)} | est +$${profit.toFixed(2)}`)}
+      ${esc(rowLabel)}
       <span class="exit-order-line" id="exit-line-${cardIndex}-${index}">${esc(sellLine)}</span>
-      <div class="exit-actions"><button onclick="copyText(byId('exit-line-${cardIndex}-${index}').textContent)">Copy SELL</button><button disabled>Get fill first</button></div>
+      <div class="exit-actions"><button onclick="copyText(byId('exit-line-${cardIndex}-${index}').textContent)" ${filledTarget ? "" : "disabled"}>Copy SELL</button><button disabled>${filledTarget ? "Ready after review" : "Get fill first"}</button></div>
     </div>`;
   }).join("");
   return `<div class="exit-plan">
-    <div class="exit-row"><div><span class="label">Exit Plan</span> <span class="warn-text">target exits not sent yet</span></div><button disabled>Get Order Info</button></div>
-    <div class="order-note">Entry order fill has not been checked yet.</div>
+    <div class="exit-row"><div><span class="label">Exit Plan</span> <span class="${hasFill ? "good-text" : "warn-text"}">${hasFill ? "fill-based closing order ready" : "target exits not sent yet"}</span></div><button onclick="refreshProposalOrderStatus('${esc(proposal.id)}', this)">Get Order Info</button></div>
+    ${renderOrderStatusLine(orderStatus)}
     <div class="exit-targets">${rows}</div>
   </div>`;
+}
+
+async function refreshProposalOrderStatus(proposalId, button) {
+  if (!proposalId) return null;
+  const original = button ? button.textContent : "";
+  if (button) {
+    button.disabled = true;
+    button.textContent = "Checking...";
+  }
+  byId("proposal-status").textContent = "checking order";
+  try {
+    const targets = encodeURIComponent((appState.settings.targets || [25, 50, 60]).join(","));
+    const result = await fetchJson(`/proposals/${encodeURIComponent(proposalId)}/orders/status?target_percentages=${targets}`);
+    if (!result.ok) {
+      const detail = result.data?.detail || result.data?.body || `HTTP ${result.status}`;
+      byId("proposal-notice").className = "notice red";
+      byId("proposal-notice").textContent = `Order info failed: ${detail}`;
+      byId("proposal-status").textContent = "order check failed";
+      return null;
+    }
+    appState.orderStatuses[proposalId] = result.data;
+    render();
+    return result.data;
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = original || "Get Order Info";
+    }
+  }
+}
+
+function proposalRequiredCost(proposal) {
+  const maxLoss = Number(proposal?.max_loss || 0);
+  const debit = Number(proposal?.debit || 0);
+  if (Number.isFinite(maxLoss) && maxLoss > 0) return maxLoss;
+  if (Number.isFinite(debit) && debit > 0) return debit;
+  return 0;
+}
+
+function accountBalanceInfo(account, proposal) {
+  const balance = account?.balance || null;
+  const required = proposalRequiredCost(proposal);
+  if (!balance || !Object.keys(balance).length) {
+    return { tone: "gray", routeClass: "", label: "Avail --", meta: "balance unavailable" };
+  }
+  if (balance.error) {
+    return { tone: "red", routeClass: "balance-low", label: "Balance error", meta: "balance lookup failed" };
+  }
+  const available = Number(balance.available_to_trade);
+  if (!Number.isFinite(available)) {
+    return { tone: "gray", routeClass: "", label: "Avail --", meta: "available balance unavailable" };
+  }
+  const ok = required <= 0 || available >= required;
+  const buyingPower = Number(balance.buying_power);
+  const cashBalance = Number(balance.cash_balance);
+  const needText = required > 0 ? ` | needed ${money(required)}` : "";
+  const buyingPowerText = Number.isFinite(buyingPower) ? ` | buying power ${money(buyingPower)}` : "";
+  const cashText = Number.isFinite(cashBalance) ? ` | cash ${money(cashBalance)}` : "";
+  return {
+    tone: ok ? "green" : "red",
+    routeClass: ok ? "balance-ok" : "balance-low",
+    label: `Avail ${money(available)}`,
+    meta: `available ${money(available)}${needText}${buyingPowerText}${cashText}`,
+  };
 }
 
 function renderAccountRouting(proposal, index) {
@@ -1026,13 +1141,14 @@ function renderAccountRouting(proposal, index) {
   }
   const rows = accounts.map(account => {
     const disabled = !account.enabled || (proposal.structure === "debit_vertical" && !account.supports_spreads);
+    const balanceInfo = accountBalanceInfo(account, proposal);
     const selected = appState.selectedAccountIds.has(account.id) || (!appState.selectedAccountIds.size && account.default_selected);
     const spread = account.supports_spreads ? "spread ok" : "single-leg only";
     const configured = account.order_configured ? "order hash set" : "order hash missing";
-    return `<label class="account-row ${disabled ? "disabled" : ""}">
+    return `<label class="account-row ${disabled ? "disabled" : balanceInfo.routeClass}">
       <input type="checkbox" data-account-id="${esc(account.id)}" onchange="toggleAccount(this)" ${selected && !disabled ? "checked" : ""} ${disabled ? "disabled" : ""}>
-      <span><strong>${esc(account.account_number || account.id)} (${esc(account.label || account.id)})</strong> <span class="muted">${esc(account.account_type || "account")} | ${spread} | ${configured} | ${esc(account.source || "discovered")}</span></span>
-      ${disabled ? badge("Blocked", "red") : badge("Ready", "green")}
+      <span><strong>${esc(account.account_number || account.id)} (${esc(account.label || account.id)})</strong> <span class="muted">${esc(account.account_type || "account")} | ${spread} | ${configured} | ${esc(account.source || "discovered")} | ${esc(balanceInfo.meta)}</span></span>
+      ${disabled ? badge("Blocked", "red") : badge(balanceInfo.label, balanceInfo.tone)}
     </label>`;
   }).join("");
   return `<div class="accounts">
@@ -1125,6 +1241,7 @@ async function sendProposal(index) {
     return;
   }
   appState.sendResponses[proposal.id] = result.data;
+  delete appState.orderStatuses[proposal.id];
   if (Array.isArray(result.data.selected_account_ids)) {
     appState.selectedAccountIds = new Set(result.data.selected_account_ids);
   }
