@@ -102,6 +102,12 @@ class SendProposalRequest(BaseModel):
     order_note: str = Field(default="", max_length=500)
 
 
+class SendExitTargetRequest(BaseModel):
+    selected_account_ids: list[str] = Field(default_factory=list)
+    confirm_live_order: bool = False
+    order_note: str = Field(default="", max_length=500)
+
+
 class AccountSendResult(BaseModel):
     account_id: str
     account_label: str

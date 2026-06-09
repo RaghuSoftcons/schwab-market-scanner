@@ -404,6 +404,7 @@ let appState = {
   accountsLoadedForKey: "",
   selectedAccountIds: new Set(),
   sendResponses: {},
+  exitSendResponses: {},
   orderStatuses: {},
   soundArmed: false,
   settings: {
@@ -1051,6 +1052,8 @@ function renderExitPlan(proposal, cardIndex) {
   const hasFill = Boolean(orderStatus?.has_filled_accounts);
   const rows = targets.map((target, index) => {
     const filledTarget = firstFilledExitTarget(orderStatus, index);
+    const exitKey = `${proposal.id}:${index}`;
+    const exitSendStatus = sendStatusText(appState.exitSendResponses[exitKey]);
     const source = filledTarget || target;
     const qty = Number(target.qty || 1);
     const filledQty = Number(source.qty || qty || 1);
@@ -1064,7 +1067,11 @@ function renderExitPlan(proposal, cardIndex) {
     return `<div class="exit-target">
       ${esc(rowLabel)}
       <span class="exit-order-line" id="exit-line-${cardIndex}-${index}">${esc(sellLine)}</span>
-      <div class="exit-actions"><button onclick="copyText(byId('exit-line-${cardIndex}-${index}').textContent)" ${filledTarget ? "" : "disabled"}>Copy SELL</button><button disabled>${filledTarget ? "Ready after review" : "Get fill first"}</button></div>
+      <div class="exit-actions">
+        <button onclick="copyText(byId('exit-line-${cardIndex}-${index}').textContent)" ${filledTarget ? "" : "disabled"}>Copy SELL</button>
+        <button class="${filledTarget ? "good" : ""}" onclick="sendExitTarget(${cardIndex}, ${index})" ${filledTarget ? "" : "disabled"}>${filledTarget ? "Send SELL" : "Get fill first"}</button>
+      </div>
+      <div class="send-status" data-exit-status-for="${esc(exitKey)}">${esc(exitSendStatus)}</div>
     </div>`;
   }).join("");
   return `<div class="exit-plan">
@@ -1072,6 +1079,52 @@ function renderExitPlan(proposal, cardIndex) {
     ${renderOrderStatusLine(orderStatus)}
     <div class="exit-targets">${rows}</div>
   </div>`;
+}
+
+async function sendExitTarget(cardIndex, targetIndex) {
+  const rawProposal = appState.currentProposals[cardIndex];
+  if (!rawProposal) return;
+  const proposal = adjustedProposalForQuantity(rawProposal);
+  const exitKey = `${proposal.id}:${targetIndex}`;
+  const status = document.querySelector(`[data-exit-status-for="${CSS.escape(exitKey)}"]`);
+  const orderStatus = appState.orderStatuses[proposal.id] || await refreshProposalOrderStatus(proposal.id, null);
+  const filledTarget = firstFilledExitTarget(orderStatus, targetIndex);
+  if (!filledTarget) {
+    if (status) status.textContent = "Get Order Info first; no filled entry target is available yet.";
+    return;
+  }
+  const selectedIds = Array.from(appState.selectedAccountIds);
+  if (!selectedIds.length) {
+    if (!appState.accounts.length) await loadAccounts();
+    if (status) status.textContent = "Select at least one Schwab account before sending a closing order.";
+    return;
+  }
+  const sellLine = filledTarget.tos_exit_order_line || byId(`exit-line-${cardIndex}-${targetIndex}`)?.textContent || "";
+  let confirmLiveOrder = false;
+  if (liveGateOpen()) {
+    confirmLiveOrder = window.confirm(`Submit LIVE Schwab closing order?\\n\\n${sellLine}\\nAccounts: ${selectedIds.join(", ")}\\n\\nOnly continue if this is exactly the closing order you want.`);
+    if (!confirmLiveOrder) {
+      if (status) status.textContent = "Live closing order cancelled before submission.";
+      return;
+    }
+  }
+  if (status) status.textContent = "Sending closing order...";
+  const body = {
+    selected_account_ids: selectedIds,
+    confirm_live_order: confirmLiveOrder,
+    order_note: `Schwab Market Scanner EXIT | ${proposal.symbol} target #${targetIndex + 1}`
+  };
+  const targets = encodeURIComponent((appState.settings.targets || [20, 50, 60]).join(","));
+  const result = await fetchJson(`/proposals/${encodeURIComponent(proposal.id)}/targets/${targetIndex}/send?target_percentages=${targets}`, authOptions("POST", body));
+  if (!result.ok) {
+    if (status) status.textContent = result.data?.detail || result.data?.body || `HTTP ${result.status}`;
+    return;
+  }
+  appState.exitSendResponses[exitKey] = result.data;
+  if (Array.isArray(result.data.selected_account_ids)) {
+    appState.selectedAccountIds = new Set(result.data.selected_account_ids);
+  }
+  render();
 }
 
 async function refreshProposalOrderStatus(proposalId, button) {

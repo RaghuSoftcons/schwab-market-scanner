@@ -30,6 +30,8 @@ def test_dashboard_contains_reference_proposal_controls() -> None:
         "entry_offset_cents",
         "target_percentages",
         "/orders/status",
+        "/targets/",
+        "Send SELL",
         "Get Order Info",
         "fill-based closing order ready",
         "buying power",

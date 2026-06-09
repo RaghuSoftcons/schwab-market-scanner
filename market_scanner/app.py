@@ -30,10 +30,11 @@ from market_scanner.models import (
     ProposalOrderFillAccountStatus,
     ProposalOrderStatusResponse,
     ScanResult,
+    SendExitTargetRequest,
     SendProposalRequest,
     SendProposalResponse,
 )
-from market_scanner.orders import schwab_order_payload
+from market_scanner.orders import fallback_broker_option_symbol, schwab_order_payload
 from market_scanner.scanner import MarketScanner, ProposalBuildSettings
 from market_scanner.storage import ScannerStorage
 
@@ -433,6 +434,43 @@ async def proposal_order_status(
     )
 
 
+@app.post("/proposals/{proposal_id}/targets/{target_index}/send", response_model=SendProposalResponse)
+async def send_exit_target(
+    proposal_id: str,
+    target_index: int,
+    request: SendExitTargetRequest,
+    _: None = Depends(_require_api_key),
+    target_percentages: Annotated[
+        str | None,
+        Query(description="Comma-separated exit target percentages, for example 20,50,60."),
+    ] = None,
+) -> SendProposalResponse:
+    proposal = storage.find_proposal(proposal_id)
+    if proposal is None:
+        proposal = _proposal_from_order_audit(proposal_id)
+    if proposal is None:
+        raise HTTPException(status_code=404, detail="Proposal not found in latest scan or order audit.")
+    accounts, account_notes = discover_schwab_accounts(_bridge_config())
+    client = SchwabMarketDataClient(settings.schwab)
+    order_status = _proposal_order_status_response(
+        proposal=proposal,
+        accounts=accounts,
+        order_client=client,
+        target_percentages=_parse_target_percentages(target_percentages),
+    )
+    response = _send_exit_target_response(
+        proposal=proposal,
+        target_index=target_index,
+        request=request,
+        accounts=accounts,
+        account_notes=account_notes,
+        order_status=order_status,
+        order_client=client,
+    )
+    storage.append_order_event(_exit_response_audit_event(response, proposal, target_index, order_status))
+    return response
+
+
 def _rank_candidates(result: ScanResult) -> None:
     for index, candidate in enumerate(result.candidates, start=1):
         candidate.rank = index
@@ -732,6 +770,186 @@ def _proposal_order_status_response(
         ),
         notes=notes,
     )
+
+
+def _send_exit_target_response(
+    *,
+    proposal: OptionProposal,
+    target_index: int,
+    request: SendExitTargetRequest,
+    accounts: list,
+    account_notes: list[str],
+    order_status: ProposalOrderStatusResponse,
+    order_client: SchwabMarketDataClient,
+) -> SendProposalResponse:
+    selected_ids = list(dict.fromkeys(request.selected_account_ids))
+    if not selected_ids:
+        return SendProposalResponse(
+            status="blocked",
+            proposal_id=proposal.id,
+            selected_account_ids=[],
+            notes=["Select at least one Schwab account before sending a closing order.", *account_notes],
+        )
+
+    accounts_by_id = {account.id: account for account in accounts if getattr(account, "enabled", False)}
+    statuses_by_account = {status.account_id: status for status in order_status.account_statuses}
+    live_gate_open = settings.service.live_gate_open
+    results: list[AccountSendResult] = []
+
+    for account_id in selected_ids:
+        account = accounts_by_id.get(account_id)
+        if account is None:
+            results.append(
+                AccountSendResult(
+                    account_id=account_id,
+                    account_label=account_id,
+                    status="blocked",
+                    reasons=["account_not_found_or_disabled"],
+                )
+            )
+            continue
+
+        fill_status = statuses_by_account.get(account.id)
+        target = _target_preview_for_account(fill_status, target_index)
+        reasons: list[str] = []
+        order_payload = _schwab_exit_order_payload(proposal, target) if target is not None else None
+
+        if proposal.structure == "debit_vertical" and not account.supports_spreads:
+            reasons.append("account_not_spread_approved")
+        if not account.account_hash:
+            reasons.append("account_hash_missing")
+        if fill_status is None:
+            reasons.append("entry_order_status_missing")
+        elif fill_status.status not in {"filled", "partial"} or fill_status.average_fill_price is None:
+            reasons.append("entry_order_not_filled")
+        if target is None:
+            reasons.append("exit_target_unavailable")
+        if _has_submitted_exit_order(proposal.id, account.id, target_index):
+            reasons.append("target_exit_already_submitted")
+        if not live_gate_open:
+            reasons.append("live_orders_blocked")
+        elif not request.confirm_live_order:
+            reasons.append("live_order_confirmation_required")
+
+        if any(reason not in {"live_orders_blocked", "live_order_confirmation_required"} for reason in reasons):
+            results.append(
+                AccountSendResult(
+                    account_id=account.id,
+                    account_label=_account_display_label(account),
+                    status="blocked",
+                    reasons=list(dict.fromkeys(reasons)),
+                    order_payload=order_payload,
+                )
+            )
+            continue
+
+        if live_gate_open and request.confirm_live_order and order_payload is not None:
+            try:
+                placed = order_client.place_order(account.account_hash, order_payload)
+                results.append(
+                    AccountSendResult(
+                        account_id=account.id,
+                        account_label=_account_display_label(account),
+                        status="submitted",
+                        reasons=["schwab_exit_order_submitted"],
+                        broker_order_id=str(placed.get("broker_order_id") or "") or None,
+                        order_payload=order_payload,
+                    )
+                )
+            except (SchwabApiError, SchwabOAuthError) as exc:
+                results.append(
+                    AccountSendResult(
+                        account_id=account.id,
+                        account_label=_account_display_label(account),
+                        status="blocked",
+                        reasons=[f"schwab_exit_order_submit_failed:{str(exc)[:200]}"],
+                        order_payload=order_payload,
+                    )
+                )
+        else:
+            results.append(
+                AccountSendResult(
+                    account_id=account.id,
+                    account_label=_account_display_label(account),
+                    status="dry_run" if "live_orders_blocked" in reasons else "blocked",
+                    reasons=list(dict.fromkeys(reasons or ["exit_order_payload_ready"])),
+                    order_payload=order_payload,
+                )
+            )
+
+    status = _aggregate_status(results)
+    return SendProposalResponse(
+        status=status,
+        proposal_id=proposal.id,
+        selected_account_ids=selected_ids,
+        account_results=results,
+        notes=[_send_exit_note(status), f"Exit target #{target_index + 1}"],
+    )
+
+
+def _target_preview_for_account(
+    fill_status: ProposalOrderFillAccountStatus | None,
+    target_index: int,
+) -> ProposalExitTargetPreview | None:
+    if fill_status is None:
+        return None
+    return next((target for target in fill_status.exit_targets if target.target_index == target_index), None)
+
+
+def _schwab_exit_order_payload(proposal: OptionProposal, target: ProposalExitTargetPreview) -> dict:
+    return {
+        "session": "NORMAL",
+        "duration": "GOOD_TILL_CANCEL",
+        "orderType": "NET_CREDIT" if proposal.structure == "debit_vertical" else "LIMIT",
+        "complexOrderStrategyType": "VERTICAL" if proposal.structure == "debit_vertical" else "NONE",
+        "quantity": target.qty,
+        "price": f"{target.target_limit_price:.2f}",
+        "orderStrategyType": "SINGLE",
+        "orderLegCollection": [
+            {
+                "instruction": "SELL_TO_CLOSE" if leg.action == "BUY" else "BUY_TO_CLOSE",
+                "quantity": target.qty,
+                "instrument": {
+                    "symbol": leg.broker_symbol or fallback_broker_option_symbol(leg),
+                    "assetType": "OPTION",
+                },
+            }
+            for leg in proposal.legs
+        ],
+    }
+
+
+def _exit_response_audit_event(
+    response: SendProposalResponse,
+    proposal: OptionProposal,
+    target_index: int,
+    order_status: ProposalOrderStatusResponse,
+) -> dict:
+    payload = response.model_dump(mode="json")
+    payload["event_type"] = "proposal_exit_send_batch"
+    payload["proposal"] = proposal.model_dump(mode="json")
+    payload["target_index"] = target_index
+    payload["order_status"] = order_status.model_dump(mode="json")
+    return payload
+
+
+def _has_submitted_exit_order(proposal_id: str, account_id: str, target_index: int) -> bool:
+    for event in storage.list_order_events():
+        if event.get("proposal_id") != proposal_id:
+            continue
+        if event.get("target_index") != target_index:
+            continue
+        account_results = event.get("account_results")
+        if not isinstance(account_results, list):
+            continue
+        for result in account_results:
+            if not isinstance(result, dict):
+                continue
+            if str(result.get("account_id") or "") != str(account_id):
+                continue
+            if result.get("status") == "submitted" and result.get("broker_order_id"):
+                return True
+    return False
 
 
 def _submitted_entry_events_by_account(proposal_id: str) -> dict[str, dict]:

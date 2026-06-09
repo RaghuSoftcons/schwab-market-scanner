@@ -4,7 +4,12 @@ from datetime import date, datetime, timezone
 
 from nt_schwab_bridge.models import OptionProposal, OptionProposalLeg
 
-from market_scanner.app import _exit_target_previews, _extract_schwab_fill, _proposal_from_order_payload
+from market_scanner.app import (
+    _exit_target_previews,
+    _extract_schwab_fill,
+    _proposal_from_order_payload,
+    _schwab_exit_order_payload,
+)
 
 
 def test_filled_order_creates_fill_based_exit_preview() -> None:
@@ -83,3 +88,32 @@ def test_order_payload_restores_proposal_for_older_audit_events() -> None:
     assert proposal.expiry == date(2026, 6, 12)
     assert proposal.legs[0].strike == 120
     assert proposal.max_loss == 250
+
+
+def test_exit_order_payload_closes_single_option() -> None:
+    proposal = _proposal_from_order_payload(
+        proposal_id="old_proposal",
+        created_at="2026-06-08T15:40:00Z",
+        order_payload={
+            "orderType": "LIMIT",
+            "complexOrderStrategyType": "NONE",
+            "quantity": 1,
+            "price": "2.50",
+            "orderLegCollection": [
+                {
+                    "instruction": "BUY_TO_OPEN",
+                    "quantity": 1,
+                    "instrument": {"symbol": "PLTR  260612C00120000", "assetType": "OPTION"},
+                }
+            ],
+        },
+    )
+    assert proposal is not None
+    target = _exit_target_previews(proposal, 2.5, 1, [20])[0]
+
+    payload = _schwab_exit_order_payload(proposal, target)
+
+    assert payload["duration"] == "GOOD_TILL_CANCEL"
+    assert payload["orderType"] == "LIMIT"
+    assert payload["price"] == "3.00"
+    assert payload["orderLegCollection"][0]["instruction"] == "SELL_TO_CLOSE"
