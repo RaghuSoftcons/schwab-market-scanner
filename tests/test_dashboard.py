@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from fastapi.testclient import TestClient
 
 from market_scanner.app import _account_display_label, app
+from nt_schwab_bridge.dashboard import render_dashboard_html
 
 
 def test_dashboard_contains_reference_proposal_controls() -> None:
@@ -48,6 +49,16 @@ def test_dashboard_contains_reference_proposal_controls() -> None:
     assert "Refresh Proposal" not in response.text
     assert 'onclick="load()">Refresh</button>' not in response.text
 
+
+
+def test_bridge_dashboard_trade_cards_include_moneyness_badges() -> None:
+    html = render_dashboard_html()
+
+    assert "trade-labels" in html
+    assert "trade-moneyness" in html
+    assert "proposalMoneyness" in html
+    assert "moneynessTone" in html
+    assert "Trade #${index + 1}" in html
 
 def test_account_aliases_match_tos_names() -> None:
     assert (

@@ -596,6 +596,14 @@ def render_dashboard_html() -> str:
       overflow-wrap: anywhere;
     }
 
+    .trade-labels {
+      align-items: center;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 5px;
+    }
+
     .trade-number {
       align-items: center;
       background: #14532d;
@@ -604,9 +612,14 @@ def render_dashboard_html() -> str:
       display: inline-flex;
       font-size: 12px;
       font-weight: 800;
-      margin-bottom: 5px;
       min-height: 24px;
       padding: 2px 8px;
+    }
+
+    .trade-moneyness .badge {
+      min-height: 24px;
+      padding: 3px 8px;
+      font-size: 12px;
     }
 
     .proposal-meta {
@@ -2910,6 +2923,31 @@ def render_dashboard_html() -> str:
       return liveOrderEnabled ? badge("LIVE READY", "red") : badge("DRY RUN", "green");
     }
 
+    function primaryLeg(proposal) {
+      return (proposal.legs || []).find((leg) => leg.action === "BUY") || (proposal.legs || [])[0] || {};
+    }
+
+    function proposalMoneyness(proposal, result) {
+      const reasons = proposal.reasons || [];
+      if (reasons.includes("itm_primary")) return "ITM";
+      if (reasons.includes("atm_primary")) return "ATM";
+      const leg = primaryLeg(proposal);
+      const underlying = Number(proposal?.underlying_price ?? result?.underlying_price);
+      const strike = Number(leg?.strike);
+      const right = String(leg?.right || "").toUpperCase();
+      if (!underlying || !strike || !right) return "OTM";
+      const tolerance = Math.max(0.5, Math.abs(underlying) * 0.0035);
+      if (Math.abs(underlying - strike) <= tolerance) return "ATM";
+      const itm = right === "CALL" ? underlying > strike : underlying < strike;
+      return itm ? "ITM" : "OTM";
+    }
+
+    function moneynessTone(value) {
+      if (value === "ITM") return "green";
+      if (value === "ATM") return "blue";
+      return "amber";
+    }
+
     async function refreshProposalOrderStatus(proposalId, button) {
       if (!proposalId || !selectedSignalId) return null;
       if (button) {
@@ -3145,10 +3183,11 @@ def render_dashboard_html() -> str:
           : "";
         const entryLimit = proposalEntryLimitText(proposal);
         const exitPlan = renderExitPlan(proposal);
+        const moneyness = proposalMoneyness(proposal, result);
         return `<article class="proposal">
           <div class="proposal-main">
             <div>
-              <div class="trade-number">Trade #${index + 1}</div>
+              <div class="trade-labels"><div class="trade-number">Trade #${index + 1}</div><span class="trade-moneyness">${badge(moneyness, moneynessTone(moneyness))}</span></div>
               <div class="proposal-title">${escapeHtml(proposalTitle(proposal))}</div>
               <div class="proposal-meta">${escapeHtml(proposalMetaText(proposal, result))}</div>
               ${renderProposalQuantityControl(rawProposal)}
