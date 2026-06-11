@@ -408,9 +408,9 @@ let appState = {
   orderStatuses: {},
   soundArmed: false,
   settings: {
-    settingsVersion: 2,
-    expiry: "NEXT_WEEK_FRIDAY",
-    expiryChoices: ["0DTE", "1DTE", "2DTE", "3DTE", "THIS_FRIDAY", "NEXT_WEEK_FRIDAY"],
+    settingsVersion: 3,
+    expiry: "AUTO",
+    expiryChoices: ["AUTO", "0DTE", "1DTE", "2DTE", "3DTE", "THIS_FRIDAY", "NEXT_WEEK_FRIDAY"],
     allowItm: true,
     maxLoss: 300,
     maxLossChoices: [200, 300, 400, 500],
@@ -478,7 +478,11 @@ function loadDashboardSettings() {
     if (!saved.settingsVersion && Array.isArray(saved.targets) && saved.targets.join(",") === "25,50,60") {
       appState.settings.targets = [20, 50, 60];
     }
-    appState.settings.settingsVersion = 2;
+    if (Number(saved.settingsVersion || 0) < 3) {
+      appState.settings.expiry = "AUTO";
+    }
+    appState.settings.expiryChoices = ["AUTO", "0DTE", "1DTE", "2DTE", "3DTE", "THIS_FRIDAY", "NEXT_WEEK_FRIDAY"];
+    appState.settings.settingsVersion = 3;
   } catch {
     return;
   }
@@ -490,7 +494,7 @@ function saveDashboardSettings() {
 function renderSetupControls() {
   const settings = appState.settings;
   byId("expiry-buttons").innerHTML = settings.expiryChoices.map(choice => {
-    const label = choice === "THIS_FRIDAY" ? "This Fri" : choice === "NEXT_WEEK_FRIDAY" ? "Next Fri" : choice;
+    const label = choice === "AUTO" ? "Auto" : choice === "THIS_FRIDAY" ? "This Fri" : choice === "NEXT_WEEK_FRIDAY" ? "Next Fri" : choice;
     return `<button class="segment-button ${choice === settings.expiry ? "active" : ""}" type="button" onclick="setExpiry('${esc(choice)}')">${esc(label)}</button>`;
   }).join("");
   byId("allow-itm-checkbox").checked = Boolean(settings.allowItm);

@@ -29,6 +29,8 @@ from market_scanner.schwab_ext import SchwabEquityDataClient
 
 
 ProposalMode = Literal["live", "skip", "simulate"]
+AUTO_EXPIRY_LABEL = "AUTO"
+AUTO_EXPIRY_LABELS = ("THIS_FRIDAY", "NEXT_WEEK_FRIDAY")
 
 
 @dataclass(frozen=True)
@@ -553,7 +555,7 @@ def _planner_config_for_build_settings(
         return config
     updates: dict[str, object] = {}
     if build_settings.expiry_labels:
-        updates["expiries"] = list(build_settings.expiry_labels)
+        updates["expiries"] = _resolved_build_expiry_labels(build_settings.expiry_labels)
     if build_settings.allow_in_the_money_primary is not None:
         updates["allow_in_the_money_primary"] = bool(build_settings.allow_in_the_money_primary)
     if build_settings.max_debit_per_trade is not None:
@@ -565,6 +567,17 @@ def _planner_config_for_build_settings(
     if not updates:
         return config
     return config.model_copy(deep=True, update=updates)
+
+
+def _resolved_build_expiry_labels(labels: Sequence[str]) -> list[str]:
+    resolved: list[str] = []
+    for label in labels:
+        normalized = label.upper().strip().replace(" ", "_")
+        if normalized == AUTO_EXPIRY_LABEL:
+            resolved.extend(AUTO_EXPIRY_LABELS)
+        elif normalized:
+            resolved.append(normalized)
+    return list(dict.fromkeys(resolved))
 
 
 def _selected_build_note(symbol: str, build_settings: ProposalBuildSettings | None) -> str:

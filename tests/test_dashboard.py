@@ -15,9 +15,11 @@ def test_dashboard_contains_reference_proposal_controls() -> None:
     for text in [
         "Current Proposal",
         "Expiry",
+        "Auto",
         "Max Loss",
         "Entry +",
         "Target %",
+        'expiry: "AUTO"',
         "Quote Freshness",
         "Entry Limit",
         "Exit Plan",

@@ -15,6 +15,7 @@ from market_scanner.schwab_ext import _parse_quote
 from market_scanner.scanner import (
     MarketScanner,
     ProposalBuildSettings,
+    _resolved_build_expiry_labels,
     _planner_config_for_build_settings,
     _session,
     _signal_record,
@@ -308,6 +309,10 @@ def test_proposal_build_settings_override_planner_controls():
     assert updated.max_debit_per_trade == 300
     assert updated.marketable_limit_offset == 0.10
     assert updated.exit_target_percentages == [20, 50, 60]
+
+
+def test_auto_expiry_build_settings_use_liquid_weeklies():
+    assert _resolved_build_expiry_labels(("AUTO",)) == ["THIS_FRIDAY", "NEXT_WEEK_FRIDAY"]
 
 
 def test_gap_up_candidate_gets_call_bias_when_regime_not_bearish():
