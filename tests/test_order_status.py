@@ -8,7 +8,13 @@ from market_scanner.app import (
     _exit_target_previews,
     _extract_schwab_fill,
     _proposal_from_order_payload,
+    _send_exit_target_response,
     _schwab_exit_order_payload,
+)
+from market_scanner.models import (
+    ProposalOrderFillAccountStatus,
+    ProposalOrderStatusResponse,
+    SendExitTargetRequest,
 )
 
 
@@ -117,3 +123,73 @@ def test_exit_order_payload_closes_single_option() -> None:
     assert payload["orderType"] == "LIMIT"
     assert payload["price"] == "3.00"
     assert payload["orderLegCollection"][0]["instruction"] == "SELL_TO_CLOSE"
+
+
+def test_exit_send_response_returns_note_without_name_error() -> None:
+    proposal = _proposal_from_order_payload(
+        proposal_id="vertical_proposal",
+        created_at="2026-06-18T15:40:00Z",
+        order_payload={
+            "orderType": "NET_DEBIT",
+            "complexOrderStrategyType": "VERTICAL",
+            "quantity": 1,
+            "price": "3.00",
+            "orderLegCollection": [
+                {
+                    "instruction": "BUY_TO_OPEN",
+                    "quantity": 1,
+                    "instrument": {"symbol": "MU    260626C01195000", "assetType": "OPTION"},
+                },
+                {
+                    "instruction": "SELL_TO_OPEN",
+                    "quantity": 1,
+                    "instrument": {"symbol": "MU    260626C01200000", "assetType": "OPTION"},
+                },
+            ],
+        },
+    )
+    assert proposal is not None
+    target = _exit_target_previews(proposal, 1.69, 1, [30])[0]
+    order_status = ProposalOrderStatusResponse(
+        proposal_id=proposal.id,
+        generated_at=datetime(2026, 6, 18, 15, 45, tzinfo=timezone.utc),
+        has_filled_accounts=True,
+        account_statuses=[
+            ProposalOrderFillAccountStatus(
+                account_id="66502618",
+                account_label="Individual",
+                broker_order_id="1006827658933",
+                status="filled",
+                schwab_status="FILLED",
+                filled_quantity=1,
+                remaining_quantity=0,
+                average_fill_price=1.69,
+                exit_targets=[target],
+            )
+        ],
+    )
+
+    response = _send_exit_target_response(
+        proposal=proposal,
+        target_index=0,
+        request=SendExitTargetRequest(selected_account_ids=["66502618"], confirm_live_order=False),
+        accounts=[
+            type(
+                "Account",
+                (),
+                {
+                    "id": "66502618",
+                    "label": "Individual",
+                    "enabled": True,
+                    "supports_spreads": True,
+                    "account_hash": "hash",
+                },
+            )()
+        ],
+        account_notes=[],
+        order_status=order_status,
+        order_client=object(),
+    )
+
+    assert response.status in {"blocked", "dry_run"}
+    assert response.notes

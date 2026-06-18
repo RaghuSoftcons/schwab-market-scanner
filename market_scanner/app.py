@@ -1348,6 +1348,14 @@ def _send_note(status: str) -> str:
     return "No Schwab order was submitted. Review account-level reasons."
 
 
+def _send_exit_note(status: str) -> str:
+    if status == "submitted":
+        return "Schwab closing order submission was attempted for every filled selected account."
+    if status == "dry_run":
+        return "Closing order payloads were prepared only; live execution gates are not all open."
+    return "No Schwab closing order was submitted. Review account-level reasons."
+
+
 def _is_simulated_proposal(proposal) -> bool:
     return proposal.id.startswith("sim_") or "SIM_ONLY" in set(proposal.reasons)
 
