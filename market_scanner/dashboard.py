@@ -1,8 +1,49 @@
 from __future__ import annotations
 
+import json
 
-def dashboard_html() -> str:
-    return """<!doctype html>
+# =============================================================================
+# File: dashboard.py
+# Created: (pre-existing)
+# Author: Claude (Anthropic) + Raghu
+# Version: 1.1.0
+# Last Modified: 2026-06-22 14:56 EST
+#
+# Change Log
+# -----------------------------------------------------------------------------
+# 2026-06-22 14:56 EST  v1.1.0  Added embedded-dashboard panels that call the
+#     existing (tested) backend endpoints:
+#       - Realized P&L panel (#4): GET /pnl/summary headline + per-account rows,
+#         "Sync P&L" -> POST /pnl/sync.
+#       - Open Positions panel + Close-now (#9): GET /positions (15s timer +
+#         manual refresh), per-row "Close now" -> POST /positions/{symbol}/close
+#         with confirm; surfaces blocked/dry_run per-account reasons.
+#       - Automation panel (#7): GET /automation/status; tier buttons Off/1/2/3
+#         (Tier 2/3 send confirm:true) -> POST /automation/tier; KILL ->
+#         POST /automation/kill; Release kill -> POST /automation/kill/release.
+#       - Dashboard polish (#6): persistent Mute (localStorage) + speech/beep
+#         cue when a new top candidate appears; brighter selection highlight.
+#       - OCO stop visibility (#1): exit targets now show Stop @X.XX and the
+#         tos_stop_order_line when stop_trigger_price > 0.
+#       - Score breakdown (#5): small "Gap .. / Vol .. / Regime .." line under
+#         each candidate (fields present on candidate/scan JSON).
+# 2026-06-22 16:10 EST  v1.2.0  Forced AUTO expiry on Build/Build All/Refresh
+#     (dropdown change rebuilds the selected candidate on the chosen date). Block
+#     notice/chip now name the specific reason. SECURITY: dashboard_html(api_key)
+#     injects settings.service.api_key so authOptions attaches X-API-Key on every
+#     protected POST; empty key keeps no-auth behavior unchanged.
+# =============================================================================
+
+
+def dashboard_html(api_key: str = "") -> str:
+    # Inject the configured API key so the operator's browser can authenticate protected POSTs
+    # when SCANNER_API_KEY is set. Empty key -> empty string -> authOptions sends no header
+    # (the backend treats an unset key as no-auth, so behavior is unchanged when no key is set).
+    # json.dumps yields a safe quoted JS string literal (handles quotes/backslashes/unicode).
+    return _DASHBOARD_TEMPLATE.replace("__SCANNER_API_KEY__", json.dumps(api_key or ""))
+
+
+_DASHBOARD_TEMPLATE = """<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
@@ -123,7 +164,12 @@ def dashboard_html() -> str:
     th, td { text-align: left; padding: 11px 10px; border-bottom: 1px solid var(--line-soft); vertical-align: top; font-size: 14px; }
     th { color: var(--muted); font-size: 12px; text-transform: uppercase; background: #f8fafc; }
     tr.candidate-row { cursor: pointer; }
-    tr.candidate-row.selected { background: #ecfdf3; box-shadow: inset 4px 0 0 var(--green); }
+    tr.candidate-row.selected { background: #c6ecd6; box-shadow: inset 4px 0 0 var(--green, #1a8f4c); }
+    .score-breakdown { margin-top: 3px; font-size: 11px; color: var(--muted); }
+    .pnl-headline { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; margin-bottom: 9px; }
+    .pnl-row, .pos-row, .auto-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 9px; border: 1px solid var(--line); border-radius: 8px; background: white; margin-bottom: 6px; font-size: 13px; flex-wrap: wrap; }
+    .pnl-row .label, .pos-row .label { text-transform: none; }
+    .panel-actions { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
     .sym { font-weight: 900; }
     .tiny { font-size: 12px; color: var(--muted); }
     .muted { color: var(--muted); }
@@ -282,6 +328,7 @@ def dashboard_html() -> str:
         <div class="sub" id="last-update">Loading...</div>
       </div>
       <div class="top-actions">
+        <button class="ghost" id="mute-button" title="Mute audio cues" onclick="toggleMute()">🔔 Mute</button>
         <button class="primary" id="build-all-button" data-run-scan-button onclick="runScan(true)">Build All</button>
       </div>
     </section>
@@ -329,6 +376,45 @@ def dashboard_html() -> str:
                 <tr><td colspan="7" class="muted">Loading...</td></tr>
               </tbody>
             </table>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2>Realized P&amp;L</h2>
+            <div class="panel-actions">
+              <span class="muted" id="pnl-status">--</span>
+              <button class="ghost" id="pnl-sync-button" onclick="syncPnl()">Sync P&amp;L</button>
+            </div>
+          </div>
+          <div class="panel-body" id="pnl-body">
+            <div class="muted">Loading P&amp;L...</div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2>Open Positions</h2>
+            <div class="panel-actions">
+              <span class="muted" id="positions-status">--</span>
+              <button class="ghost" id="positions-refresh-button" onclick="loadPositions(true)">Refresh positions</button>
+            </div>
+          </div>
+          <div class="panel-body" id="positions-body">
+            <div class="muted">Loading positions...</div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2>Automation</h2>
+            <div class="panel-actions">
+              <span class="muted" id="automation-status-label">--</span>
+              <button class="ghost" onclick="loadAutomation()">Refresh</button>
+            </div>
+          </div>
+          <div class="panel-body" id="automation-body">
+            <div class="muted">Loading automation status...</div>
           </div>
         </section>
       </div>
@@ -407,6 +493,12 @@ let appState = {
   exitSendResponses: {},
   orderStatuses: {},
   soundArmed: false,
+  pnl: null,
+  positions: [],
+  positionErrors: [],
+  automation: null,
+  muted: false,
+  lastTopSymbol: null,
   settings: {
     settingsVersion: 3,
     expiry: "AUTO",
@@ -460,8 +552,14 @@ async function fetchJson(url, opts) {
   return { ok: res.ok, status: res.status, data };
 }
 
+// Injected from settings.service.api_key at render time. Empty string when no key is configured.
+const SCANNER_API_KEY = __SCANNER_API_KEY__;
+
 function authOptions(method, body) {
   const opts = { method, headers: {} };
+  if (SCANNER_API_KEY) {
+    opts.headers["X-API-Key"] = SCANNER_API_KEY;
+  }
   if (body !== undefined) {
     opts.headers["Content-Type"] = "application/json";
     opts.body = JSON.stringify(body);
@@ -509,10 +607,22 @@ function renderSetupControls() {
   )).join("");
 }
 
+function forceAutoExpiry() {
+  // Build / Build All / Refresh Prices always start from AUTO (Friday weeklies) so a proposal
+  // reliably appears first. The user then picks a specific expiry to rebuild on that date.
+  appState.settings.expiry = "AUTO";
+  saveDashboardSettings();
+}
 function setExpiry(value) {
   appState.settings.expiry = value;
   saveDashboardSettings();
-  render();
+  // Changing the expiry after a proposal exists rebuilds the SELECTED candidate on that date
+  // (the Build/Refresh buttons reset to AUTO; the dropdown is how you target a specific expiry).
+  if (value !== "AUTO" && appState.scan && appState.selectedSymbol) {
+    buildSelectedProposal(appState.selectedSymbol);
+  } else {
+    render();
+  }
 }
 function setMaxLoss(value) {
   appState.settings.maxLoss = Number(value);
@@ -549,6 +659,7 @@ function proposalSettingsParams(includeOptions) {
 
 async function load() {
   loadDashboardSettings();
+  loadMuteState();
   renderSetupControls();
 
   const [healthResult, schwabResult, scanResult] = await Promise.all([
@@ -561,9 +672,250 @@ async function load() {
   appState.scan = scanResult.data && scanResult.data.scan_id ? scanResult.data : null;
   render();
   await loadAccounts({ force: false });
+  loadPnl();
+  loadPositions(false);
+  loadAutomation();
+}
+
+// ---- Realized P&L panel (#4) -------------------------------------------------
+async function loadPnl() {
+  const result = await fetchJson("/pnl/summary");
+  if (result.ok) {
+    appState.pnl = result.data;
+    renderPnl();
+  } else if (byId("pnl-status")) {
+    byId("pnl-status").textContent = "load failed";
+  }
+}
+
+async function syncPnl() {
+  const button = byId("pnl-sync-button");
+  const original = button ? button.textContent : "";
+  if (button) { button.disabled = true; button.textContent = "Syncing..."; }
+  if (byId("pnl-status")) byId("pnl-status").textContent = "syncing";
+  try {
+    const result = await fetchJson("/pnl/sync", authOptions("POST"));
+    if (!result.ok) {
+      if (byId("pnl-status")) byId("pnl-status").textContent = result.data?.detail || `HTTP ${result.status}`;
+      return;
+    }
+    appState.pnl = result.data.summary || appState.pnl;
+    if (byId("pnl-status")) byId("pnl-status").textContent = `+${Number(result.data.new_closes || 0)} closes`;
+    renderPnl();
+  } finally {
+    if (button) { button.disabled = false; button.textContent = original || "Sync P&L"; }
+  }
+}
+
+function moneySigned(value) {
+  const num = Number(value);
+  if (Number.isNaN(num)) return "--";
+  return (num >= 0 ? "+$" : "-$") + Math.abs(num).toFixed(2);
+}
+function pnlClass(value) { return Number(value) >= 0 ? "good-text" : "bad-text"; }
+
+function renderPnl() {
+  const body = byId("pnl-body");
+  if (!body) return;
+  const data = appState.pnl;
+  if (!data) { body.innerHTML = `<div class="muted">No P&amp;L yet.</div>`; return; }
+  const pnl = data.pnl || {};
+  const headline = `
+    <div class="pnl-headline">
+      <div class="metric"><div class="label">All Time</div><div class="value ${pnlClass(pnl.all_time)}">${moneySigned(pnl.all_time)}</div></div>
+      <div class="metric"><div class="label">Today</div><div class="value ${pnlClass(pnl.today)}">${moneySigned(pnl.today)}</div></div>
+      <div class="metric"><div class="label">Week</div><div class="value ${pnlClass(pnl.week)}">${moneySigned(pnl.week)}</div></div>
+    </div>
+    <div class="muted" style="margin-bottom:8px;">${Number(pnl.wins || 0)}W - ${Number(pnl.losses || 0)}L | ${Number(pnl.trade_count || 0)} trades | win rate ${pct(pnl.win_rate)}</div>`;
+  const rows = (data.pnl_by_account || []).map(acct => `
+    <div class="pnl-row">
+      <span class="label"><strong>${esc(acct.account_label || acct.account_id)}</strong></span>
+      <span>Today <span class="${pnlClass(acct.today)}">${moneySigned(acct.today)}</span> | Week <span class="${pnlClass(acct.week)}">${moneySigned(acct.week)}</span> | All <span class="${pnlClass(acct.all_time)}">${moneySigned(acct.all_time)}</span> | ${Number(acct.wins || 0)}W-${Number(acct.losses || 0)}L (${pct(acct.win_rate)})</span>
+    </div>`).join("");
+  body.innerHTML = headline + (rows || `<div class="muted">No per-account P&amp;L rows.</div>`);
+}
+
+// ---- Open Positions + Close-now (#9) ----------------------------------------
+async function loadPositions(manual) {
+  if (manual && byId("positions-refresh-button")) {
+    byId("positions-refresh-button").disabled = true;
+    byId("positions-refresh-button").textContent = "Refreshing...";
+  }
+  if (byId("positions-status")) byId("positions-status").textContent = "loading";
+  try {
+    const result = await fetchJson("/positions");
+    if (result.ok) {
+      appState.positions = result.data.positions || [];
+      appState.positionErrors = result.data.errors || [];
+      if (byId("positions-status")) byId("positions-status").textContent = shortTime(result.data.generated_at);
+      renderPositions();
+    } else if (byId("positions-status")) {
+      byId("positions-status").textContent = "load failed";
+    }
+  } finally {
+    if (manual && byId("positions-refresh-button")) {
+      byId("positions-refresh-button").disabled = false;
+      byId("positions-refresh-button").textContent = "Refresh positions";
+    }
+  }
+}
+
+function renderPositions() {
+  const body = byId("positions-body");
+  if (!body) return;
+  const positions = appState.positions || [];
+  const errs = (appState.positionErrors || []).map(e => `<div class="notice red" style="margin-top:6px;">${esc(e)}</div>`).join("");
+  if (!positions.length) {
+    body.innerHTML = `<div class="empty">No open positions.</div>${errs}`;
+    return;
+  }
+  const rows = positions.map((pos, index) => {
+    const sym = esc(pos.symbol).replace(/'/g, "\\'");
+    return `<div class="pos-row" data-pos-index="${index}">
+      <span class="label"><strong>${esc(pos.account_label || pos.account_id)}</strong> | ${esc(pos.underlying || "")} <span class="muted">${esc(pos.symbol)}</span></span>
+      <span>Net ${Number(pos.net_qty)} | Avg ${plainMoney(pos.average_price)} | MV ${money(pos.market_value)} | uPnL <span class="${pnlClass(pos.unrealized_pnl)}">${moneySigned(pos.unrealized_pnl)}</span></span>
+      <button class="danger" onclick="closePosition(${index})">Close now</button>
+      <div class="send-status" data-pos-status="${index}"></div>
+    </div>`;
+  }).join("");
+  body.innerHTML = rows + errs;
+}
+
+async function closePosition(index) {
+  const pos = (appState.positions || [])[index];
+  if (!pos) return;
+  const status = document.querySelector(`[data-pos-status="${index}"]`);
+  const ok = window.confirm(`Close ${pos.net_qty} ${pos.symbol} in ${pos.account_label}? This sends a MARKET order.`);
+  if (!ok) { if (status) status.textContent = "Close cancelled."; return; }
+  if (status) status.textContent = "Sending close order...";
+  const body = { selected_account_ids: [pos.account_id], confirm_live_order: true };
+  const result = await fetchJson(`/positions/${encodeURIComponent(pos.symbol)}/close`, authOptions("POST", body));
+  if (!result.ok) {
+    if (status) status.textContent = result.data?.detail || result.data?.body || `HTTP ${result.status}`;
+    return;
+  }
+  const data = result.data || {};
+  const accountText = (data.account_results || []).map(r =>
+    `${r.account_label || r.account_id}: ${r.status}${r.broker_order_id ? " " + r.broker_order_id : ""}${(r.reasons || []).length ? " (" + r.reasons.join(", ") + ")" : ""}`
+  ).join(" | ");
+  const notes = (data.notes || []).join(" ");
+  if (status) status.textContent = `${data.status || "done"}${accountText ? " | " + accountText : ""}${notes ? " | " + notes : ""}`;
+  loadPositions(false);
+}
+
+// ---- Automation tiers (#7) --------------------------------------------------
+async function loadAutomation() {
+  const result = await fetchJson("/automation/status");
+  if (result.ok) {
+    appState.automation = result.data;
+    renderAutomation();
+  } else if (byId("automation-status-label")) {
+    byId("automation-status-label").textContent = "load failed";
+  }
+}
+
+async function postAutomation(url, body, labelEl) {
+  const result = await fetchJson(url, authOptions("POST", body));
+  if (!result.ok) {
+    if (labelEl) labelEl.textContent = result.data?.detail || `HTTP ${result.status}`;
+    return;
+  }
+  appState.automation = result.data;
+  renderAutomation();
+}
+
+function setTier(tier) {
+  const confirmNeeded = tier === "2" || tier === "3";
+  postAutomation("/automation/tier", { tier, confirm: true }, byId("automation-status-label"));
+}
+function killSwitch() {
+  postAutomation("/automation/kill", { reason: "dashboard" }, byId("automation-status-label"));
+}
+function releaseKill() {
+  postAutomation("/automation/kill/release", undefined, byId("automation-status-label"));
+}
+
+function renderAutomation() {
+  const body = byId("automation-body");
+  if (!body) return;
+  const data = appState.automation;
+  if (!data) { body.innerHTML = `<div class="muted">No automation status.</div>`; return; }
+  if (byId("automation-status-label")) byId("automation-status-label").textContent = data.tier_label || data.tier || "--";
+  const kill = data.kill_switch || {};
+  const tierBtns = [["off", "Off"], ["1", "Tier 1"], ["2", "Tier 2"], ["3", "Tier 3"]].map(([value, label]) =>
+    `<button class="segment-button ${String(data.tier) === value ? "active" : ""}" type="button" onclick="setTier('${value}')">${label}</button>`
+  ).join("");
+  body.innerHTML = `
+    <div class="auto-row">
+      <span class="label"><strong>${esc(data.tier_label || data.tier || "--")}</strong></span>
+      <span>${badge(data.live_gate_open ? "LIVE GATE ON" : "LIVE GATE OFF", data.live_gate_open ? "red" : "green")}
+        ${kill.engaged ? badge("KILL ENGAGED" + (kill.reason ? " (" + esc(kill.reason) + ")" : ""), "red") : badge("KILL OFF", "gray")}</span>
+    </div>
+    <div class="auto-row">
+      <span class="label">Set Tier</span>
+      <span class="segmented">${tierBtns}</span>
+    </div>
+    <div class="auto-row">
+      <span class="label">Kill Switch</span>
+      <span class="panel-actions">
+        <button class="danger" onclick="killSwitch()">KILL</button>
+        <button class="ghost" onclick="releaseKill()">Release kill</button>
+      </span>
+    </div>`;
+}
+
+// ---- Dashboard polish (#6): mute + audio cue --------------------------------
+function loadMuteState() {
+  try { appState.muted = localStorage.getItem("scanner_sound_muted") === "true"; } catch { appState.muted = false; }
+  renderMuteButton();
+}
+function renderMuteButton() {
+  const button = byId("mute-button");
+  if (!button) return;
+  button.textContent = appState.muted ? "🔕 Muted" : "🔔 Mute";
+}
+function toggleMute() {
+  appState.muted = !appState.muted;
+  try { localStorage.setItem("scanner_sound_muted", appState.muted ? "true" : "false"); } catch {}
+  renderMuteButton();
+}
+
+function announceCandidate(direction) {
+  if (appState.muted) return;
+  try {
+    if (window.speechSynthesis && (direction === "long" || direction === "short")) {
+      const utter = new SpeechSynthesisUtterance(direction === "long" ? "Long" : "Short");
+      window.speechSynthesis.speak(utter);
+    }
+  } catch {}
+  try {
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if (!AudioCtx) return;
+    const context = new AudioCtx();
+    const oscillator = context.createOscillator();
+    const gain = context.createGain();
+    oscillator.connect(gain);
+    gain.connect(context.destination);
+    oscillator.frequency.value = 880;
+    gain.gain.setValueAtTime(0.001, context.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.12, context.currentTime + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.001, context.currentTime + 0.22);
+    oscillator.start();
+    oscillator.stop(context.currentTime + 0.25);
+  } catch {}
+}
+
+function maybeAnnounceTopCandidate() {
+  const top = (appState.scan?.top_candidates || [])[0];
+  const symbol = top?.symbol || null;
+  if (symbol && symbol !== appState.lastTopSymbol) {
+    if (appState.lastTopSymbol !== null) announceCandidate(top.direction);
+    appState.lastTopSymbol = symbol;
+  }
 }
 
 async function runScan(includeOptions = true) {
+  forceAutoExpiry();  // Build All / Refresh Prices always run on AUTO so proposals appear.
   const opts = authOptions("POST");
   if (!opts) return;
   const buttons = Array.from(document.querySelectorAll("[data-run-scan-button]"));
@@ -625,6 +977,7 @@ async function buildSelectedProposal(symbolOverride) {
 
 function buildCandidate(event, symbol) {
   if (event) event.stopPropagation();
+  forceAutoExpiry();
   buildSelectedProposal(symbol);
 }
 
@@ -675,6 +1028,8 @@ function render() {
   byId("candidate-count").textContent = `${(scan?.top_candidates || []).length} shown`;
   setStatus(`Last update: ${shortTime(scan?.scanned_at || health.latest_scan_at)}`);
   renderBuildButton();
+  renderMuteButton();
+  maybeAnnounceTopCandidate();
 
   if (!scan) {
     byId("candidate-rows").innerHTML = `<tr><td colspan="7" class="muted">No scan has been saved yet.</td></tr>`;
@@ -700,6 +1055,63 @@ function renderBuildButton() {
   buildButton.dataset.originalText = buildButton.textContent;
 }
 
+// Score breakdown (#5): candidate JSON carries metrics.gap_pct, metrics.premarket_volume,
+// candidate.direction; regime bias lives on the scan. Render a small line under the score.
+function scoreBreakdownLine(candidate) {
+  const metrics = candidate.metrics || {};
+  const parts = [];
+  if (metrics.gap_pct !== null && metrics.gap_pct !== undefined) parts.push(`Gap ${pct(metrics.gap_pct)}`);
+  if (metrics.premarket_volume) parts.push(`Vol ${intFmt(metrics.premarket_volume)}`);
+  const regime = appState.scan?.regime?.bias;
+  if (regime) parts.push(`Regime ${esc(regime)}`);
+  if (candidate.direction && candidate.direction !== "none") parts.push(`Dir ${esc(candidate.direction)}`);
+  return parts.length ? `<div class="score-breakdown">${parts.join(" · ")}</div>` : "";
+}
+
+// Build a notice that names the SPECIFIC block reason(s), not just the generic catch-all.
+// "no_proposals_after_filters" is always appended by the planner, so we surface what's
+// behind it: e.g. "no contracts for this expiry (try AUTO)" vs "filtered: low OI, wide spread".
+function blockedNoticeText(reasons) {
+  const list = (reasons || []).filter(Boolean);
+  const specifics = list.filter((r) => r !== "no_proposals_after_filters");
+  if (!specifics.length) return "No eligible proposal survived the current option-chain filters.";
+  const noContracts = specifics.some((r) => String(r).indexOf("_contracts_for_expiry") !== -1);
+  if (noContracts) {
+    return "No option contracts exist for the selected expiry — these tickers have no expiry that day. Switch Expiry to AUTO (Friday weeklies) and rebuild.";
+  }
+  const labels = Array.from(new Set(specifics.map((r) => blockedReasonSummary([r]))));
+  return `Filtered out: ${labels.join(", ")}. (${specifics.length} contract-filter reasons — hover a candidate's chip or see below for detail.)`;
+}
+
+// Turn the planner's raw block reasons into one short, human label for the chip.
+// The full list is shown on hover (title) and in the proposal detail panel.
+function blockedReasonSummary(reasons) {
+  const list = (reasons || []).filter(Boolean);
+  if (!list.length) return "no proposals";
+  // Prefer the most specific reason over the generic catch-all.
+  const specific = list.find((r) => r !== "no_proposals_after_filters") || list[0];
+  const key = String(specific).split(":")[0];
+  const friendly = {
+    debit_out_of_range: "cost out of range",
+    spread_debit_out_of_range: "spread cost out of range",
+    no_spread_leg: "no spread leg",
+    no_eligible_long_contracts: "no eligible contracts",
+    no_proposals_after_filters: "filtered out",
+    options_planner_disabled: "planner disabled",
+    signal_decision_blocked: "signal blocked",
+    no_valid_target_expiries: "no expiry",
+    wide_bid_ask_spread: "wide spread",
+    low_open_interest: "low OI",
+    stale_quote: "stale quote",
+    delta_out_of_range: "delta out of range",
+    invalid_bid_ask: "no quote",
+  };
+  for (const prefix of Object.keys(friendly)) {
+    if (key.startsWith(prefix) || String(specific).indexOf(prefix) !== -1) return friendly[prefix];
+  }
+  return key.replace(/_/g, " ");
+}
+
 function candidateRow(candidate) {
   const metrics = candidate.metrics || {};
   const selected = candidate.symbol === appState.selectedSymbol ? " selected" : "";
@@ -711,10 +1123,10 @@ function candidateRow(candidate) {
   const buildBadge = proposals.length
     ? badge(`${proposals.length} ready`, "green")
     : blockedReasons.length
-      ? badge("blocked", "amber")
+      ? `<span class="badge amber" title="${esc(blockedReasons.join(" | "))}">blocked: ${esc(blockedReasonSummary(blockedReasons))}</span>`
       : "";
   return `<tr class="candidate-row${selected}" onclick="selectCandidate('${selectedAttr}')">
-    <td><div class="sym">${esc(candidate.symbol)}</div><div class="tiny">rank ${candidate.rank || ""}</div></td>
+    <td><div class="sym">${esc(candidate.symbol)}</div><div class="tiny">rank ${candidate.rank || ""}</div>${scoreBreakdownLine(candidate)}</td>
     <td>${badge(candidate.action || "WATCH", tone)}</td>
     <td>${plainMoney(metrics.current_price)}</td>
     <td class="${Number(metrics.gap_pct || 0) >= 0 ? "good-text" : "bad-text"}">${pct(metrics.gap_pct)}</td>
@@ -756,7 +1168,7 @@ function renderProposal(candidate) {
       ? "SIM ONLY: replayed Friday underlying prices with current Schwab option-chain contract data. Order sending is blocked."
       : "Access token is present for read-only market-data calls. Schwab order placement remains controlled by scanner execution gates."
     : blockedReasons.length
-      ? "No eligible proposal survived the current option-chain filters."
+      ? blockedNoticeText(blockedReasons)
       : `Click Build ${candidate.symbol} to fetch option proposals for only this ticker.`;
   setMetrics(metrics);
   renderQuoteFreshness(proposals);
@@ -1065,12 +1477,16 @@ function renderExitPlan(proposal, cardIndex) {
     const limit = Number(source.target_limit_price || 0);
     const profit = Number(source.estimated_profit || 0);
     const sellLine = source.tos_exit_order_line || tosExitOrderLine(proposal, filledQty, limit);
+    const stopTrigger = Number(source.stop_trigger_price || 0);
+    const stopLine = source.tos_stop_order_line || "";
+    const stopText = stopTrigger > 0 ? ` | Stop @${stopTrigger.toFixed(2)}` : "";
     const rowLabel = filledTarget
-      ? `${filledQty} @ +${percent.toLocaleString(undefined, { maximumFractionDigits: 4 })}% -> ${limit.toFixed(2)} | est +$${profit.toFixed(2)} | ${filledTarget.account.account_label}`
-      : `${qty} @ +${percent.toLocaleString(undefined, { maximumFractionDigits: 4 })}% -> ${limit.toFixed(2)} | est +$${profit.toFixed(2)} | planned`;
+      ? `${filledQty} @ +${percent.toLocaleString(undefined, { maximumFractionDigits: 4 })}% -> ${limit.toFixed(2)} | est +$${profit.toFixed(2)}${stopText} | ${filledTarget.account.account_label}`
+      : `${qty} @ +${percent.toLocaleString(undefined, { maximumFractionDigits: 4 })}% -> ${limit.toFixed(2)} | est +$${profit.toFixed(2)}${stopText} | planned`;
     return `<div class="exit-target">
       ${esc(rowLabel)}
       <span class="exit-order-line" id="exit-line-${cardIndex}-${index}">${esc(sellLine)}</span>
+      ${stopTrigger > 0 && stopLine ? `<span class="exit-order-line">${esc(stopLine)}</span>` : ""}
       <div class="exit-actions">
         <button onclick="copyText(byId('exit-line-${cardIndex}-${index}').textContent)" ${filledTarget ? "" : "disabled"}>Copy SELL</button>
         <button class="${filledTarget ? "good" : ""}" onclick="sendExitTarget(${cardIndex}, ${index})" ${filledTarget ? "" : "disabled"}>${filledTarget ? "Send SELL" : "Get fill first"}</button>
@@ -1392,6 +1808,7 @@ function testSound() {
 
 load();
 setInterval(load, 60000);
+setInterval(() => loadPositions(false), 15000);
 </script>
 </body>
 </html>"""

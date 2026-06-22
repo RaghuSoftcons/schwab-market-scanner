@@ -125,6 +125,106 @@ def test_exit_order_payload_closes_single_option() -> None:
     assert payload["orderLegCollection"][0]["instruction"] == "SELL_TO_CLOSE"
 
 
+def test_single_option_exit_becomes_oco_bracket_with_stop() -> None:
+    # Phase 2 OCO: a single-leg option with a protective stop must produce a true
+    # entry-less OCO (LIMIT profit target OCO STOP loss), both children on the same leg.
+    proposal = _proposal_from_order_payload(
+        proposal_id="oco_proposal",
+        created_at="2026-06-08T15:40:00Z",
+        order_payload={
+            "orderType": "LIMIT",
+            "complexOrderStrategyType": "NONE",
+            "quantity": 1,
+            "price": "2.50",
+            "orderLegCollection": [
+                {
+                    "instruction": "BUY_TO_OPEN",
+                    "quantity": 1,
+                    "instrument": {"symbol": "PLTR  260612C00120000", "assetType": "OPTION"},
+                }
+            ],
+        },
+    )
+    assert proposal is not None
+    # 50% stop on a 2.50 entry -> stop trigger at 1.25; 20% target -> 3.00.
+    target = _exit_target_previews(proposal, 2.5, 1, [20], stop_loss_percent=50)[0]
+    assert target.stop_trigger_price == 1.25
+    assert target.tos_stop_order_line.endswith("@1.25 STP GTC")
+
+    payload = _schwab_exit_order_payload(proposal, target)
+
+    assert payload["orderStrategyType"] == "OCO"
+    children = payload["childOrderStrategies"]
+    assert len(children) == 2
+    target_child, stop_child = children
+    assert target_child["orderType"] == "LIMIT"
+    assert target_child["price"] == "3.00"
+    assert stop_child["orderType"] == "STOP"
+    assert stop_child["stopPrice"] == "1.25"
+    # Both children close the same long leg.
+    assert target_child["orderLegCollection"][0]["instruction"] == "SELL_TO_CLOSE"
+    assert stop_child["orderLegCollection"][0]["instruction"] == "SELL_TO_CLOSE"
+
+
+def test_single_option_exit_without_stop_stays_single_limit() -> None:
+    # stop_loss_percent=0 (or unset) keeps the legacy target-only SINGLE LIMIT exit.
+    proposal = _proposal_from_order_payload(
+        proposal_id="no_stop_proposal",
+        created_at="2026-06-08T15:40:00Z",
+        order_payload={
+            "orderType": "LIMIT",
+            "complexOrderStrategyType": "NONE",
+            "quantity": 1,
+            "price": "2.50",
+            "orderLegCollection": [
+                {
+                    "instruction": "BUY_TO_OPEN",
+                    "quantity": 1,
+                    "instrument": {"symbol": "PLTR  260612C00120000", "assetType": "OPTION"},
+                }
+            ],
+        },
+    )
+    assert proposal is not None
+    target = _exit_target_previews(proposal, 2.5, 1, [20], stop_loss_percent=0)[0]
+    assert target.stop_trigger_price == 0
+    payload = _schwab_exit_order_payload(proposal, target)
+    assert payload["orderStrategyType"] == "SINGLE"
+    assert "childOrderStrategies" not in payload
+
+
+def test_vertical_exit_stays_net_credit_single_even_with_stop() -> None:
+    # Verticals never become OCO here (a STOP on a NET_CREDIT spread close is unsupported).
+    proposal = _proposal_from_order_payload(
+        proposal_id="vertical_no_oco",
+        created_at="2026-06-18T15:40:00Z",
+        order_payload={
+            "orderType": "NET_DEBIT",
+            "complexOrderStrategyType": "VERTICAL",
+            "quantity": 1,
+            "price": "3.00",
+            "orderLegCollection": [
+                {
+                    "instruction": "BUY_TO_OPEN",
+                    "quantity": 1,
+                    "instrument": {"symbol": "MU    260626C01195000", "assetType": "OPTION"},
+                },
+                {
+                    "instruction": "SELL_TO_OPEN",
+                    "quantity": 1,
+                    "instrument": {"symbol": "MU    260626C01200000", "assetType": "OPTION"},
+                },
+            ],
+        },
+    )
+    assert proposal is not None
+    target = _exit_target_previews(proposal, 1.69, 1, [30], stop_loss_percent=50)[0]
+    assert target.stop_trigger_price == 0
+    payload = _schwab_exit_order_payload(proposal, target)
+    assert payload["orderStrategyType"] == "SINGLE"
+    assert payload["orderType"] == "NET_CREDIT"
+
+
 def test_exit_send_response_returns_note_without_name_error() -> None:
     proposal = _proposal_from_order_payload(
         proposal_id="vertical_proposal",

@@ -32,7 +32,8 @@ options:
 
 schwab:
   market_data_enabled: true
-  auto_refresh_enabled: true
+  # Read-only token consumption by default — avoids racing the rotating refresh_token.
+  auto_refresh_enabled: false
   token_store_path: "D:\\data\\schwab\\schwab_tokens.json"
   import_existing_client: true
 

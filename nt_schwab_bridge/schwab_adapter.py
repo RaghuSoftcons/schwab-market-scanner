@@ -1,4 +1,10 @@
-"""Read-only Schwab market-data adapter for dry-run proposal generation."""
+"""Read-only Schwab market-data adapter for dry-run proposal generation.
+
+Port Change Log (Scanner <- Unified Platform):
+- 2026-06-22 14:11 EST | Phase 1 | Replaced flat available-funds priority list with the
+  account-type-aware selection + _conservative_available() helper (MARGIN -> availableFunds,
+  CASH -> cashAvailableForTrading, min(current, projected)). Fixes overstated availability.
+"""
 
 from __future__ import annotations
 
@@ -630,6 +636,89 @@ class SchwabMarketDataClient:
             raise SchwabApiError(f"Schwab order status request failed: {status_code} {response_text[:500]}")
         return payload
 
+    def get_transactions(
+        self, account_hash: str, start: datetime, end: datetime, types: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Fetch executed transactions (the array endpoint) for realized-P&L sync.
+        types=None fetches ALL types so option expirations/assignments
+        (RECEIVE_AND_DELIVER) are included alongside TRADE."""
+        if not account_hash.strip():
+            raise SchwabApiError("Schwab account hash is required before reading transactions.")
+        params = {
+            "startDate": start.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+            "endDate": end.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+        }
+        if types:
+            params["types"] = types
+        url = f"{self.base_url}/trader/v1/accounts/{account_hash}/transactions"
+        try:
+            with self._http_client_factory() as client:
+                response = client.get(url, headers=self._headers(), params=params)
+        except Exception as exc:
+            raise SchwabApiError(f"Schwab transactions request failed: {exc}") from exc
+        if response.status_code >= 400:
+            raise SchwabApiError(
+                f"Schwab transactions request failed: {response.status_code} {response.text[:300]}"
+            )
+        payload = response.json()
+        if isinstance(payload, list):
+            return payload
+        if isinstance(payload, dict):
+            for key in ("transactions", "data", "items"):
+                if isinstance(payload.get(key), list):
+                    return payload[key]
+        return []
+
+    def get_positions(self, account_hash: str) -> list[dict[str, Any]]:
+        """AUTHORITATIVE open-positions pull straight from Schwab.
+
+        The scanner places trades directly across multiple accounts, so an in-memory
+        tracker would miss directly-placed and post-restart positions. We always read
+        broker truth via /accounts/{hash}?fields=positions. Returns the raw position
+        dicts (each carries an `instrument`, `longQuantity`/`shortQuantity`,
+        `averagePrice`, `marketValue`, etc.); aggregation/normalisation is the caller's job.
+        """
+        if not account_hash.strip():
+            raise SchwabApiError("Schwab account hash is required before reading positions.")
+        payload, status_code, response_text = self._get_json_with_status(
+            f"/trader/v1/accounts/{account_hash}", params={"fields": "positions"}
+        )
+        if status_code >= 400:
+            raise SchwabApiError(f"Schwab positions request failed: {status_code} {response_text[:300]}")
+        account = payload.get("securitiesAccount") if isinstance(payload, dict) else None
+        if not isinstance(account, dict):
+            return []
+        positions = account.get("positions")
+        return positions if isinstance(positions, list) else []
+
+    def cancel_order(self, account_hash: str, order_id: str) -> None:
+        if not account_hash.strip():
+            raise SchwabApiError("Schwab account hash is required before cancelling an order.")
+        if not order_id.strip():
+            raise SchwabApiError("Schwab order id is required before cancelling an order.")
+        url = f"{self.base_url}/trader/v1/accounts/{account_hash}/orders/{order_id}"
+        try:
+            with self._http_client_factory() as client:
+                response = client.delete(url, headers=self._headers())
+        except Exception as exc:
+            raise SchwabApiError(f"Schwab order cancellation request failed: {exc}") from exc
+        if response.status_code >= 400:
+            raise SchwabApiError(f"Schwab order cancellation failed: {response.status_code} {response.text[:500]}")
+
+    def replace_order(self, account_hash: str, order_id: str, order_payload: dict) -> None:
+        if not account_hash.strip():
+            raise SchwabApiError("Schwab account hash is required before replacing an order.")
+        if not order_id.strip():
+            raise SchwabApiError("Schwab order id is required before replacing an order.")
+        url = f"{self.base_url}/trader/v1/accounts/{account_hash}/orders/{order_id}"
+        try:
+            with self._http_client_factory() as client:
+                response = client.put(url, headers=self._headers(), json=order_payload)
+        except Exception as exc:
+            raise SchwabApiError(f"Schwab order replacement request failed: {exc}") from exc
+        if response.status_code >= 400:
+            raise SchwabApiError(f"Schwab order replacement failed: {response.status_code} {response.text[:500]}")
+
     def _get_json_with_status(
         self,
         path: str,
@@ -994,19 +1083,24 @@ def _extract_underlying_price(payload: dict[str, Any]) -> float | None:
 
 
 def _extract_account_balance_summary(account: dict[str, Any]) -> dict[str, Any]:
-    available, available_source = _first_balance_value(
-        account,
-        (
-            ("currentBalances", "cashAvailableForTrading"),
-            ("currentBalances", "availableFunds"),
-            ("currentBalances", "availableFundsNonMarginableTrade"),
-            ("currentBalances", "cashBalance"),
-            ("projectedBalances", "cashAvailableForTrading"),
-            ("projectedBalances", "availableFunds"),
-            ("initialBalances", "cashAvailableForTrading"),
-            ("initialBalances", "availableFunds"),
-        ),
-    )
+    # The "available to trade" figure depends on the account type AND on current-vs-projected:
+    #   * MARGIN accounts: availableFunds is the margin-adjusted number a trader can
+    #     actually deploy. cashAvailableForTrading reports gross settled cash and
+    #     OVERSTATES availability (this is what made NIFTY show $301.77 instead of $70.36).
+    #   * CASH accounts: cashAvailableForTrading is the settled cash available to trade.
+    #   * current vs projected: Schwab's DISPLAYED "available funds" for an actively-trading
+    #     account is the PROJECTED figure, which nets out pending/unsettled buys (e.g. open
+    #     option scalps). The CURRENT snapshot can be higher and overstates what's deployable
+    #     (Individual showed $521.87 current vs $170.54 projected, which is what Schwab shows).
+    #     So we take the MINIMUM of current and projected for the chosen metric — that matches
+    #     Schwab and never overstates affordability.
+    raw_type = str(account.get("type", "") or account.get("accountType", "") or "").upper()
+    if "MARGIN" in raw_type:
+        available_keys = ("availableFunds", "cashAvailableForTrading", "availableFundsNonMarginableTrade", "cashBalance")
+    else:
+        # CASH (or unknown) accounts: settled tradeable cash comes first.
+        available_keys = ("cashAvailableForTrading", "availableFunds", "availableFundsNonMarginableTrade", "cashBalance")
+    available, available_source = _conservative_available(account, available_keys)
     buying_power, buying_power_source = _first_balance_value(
         account,
         (
@@ -1030,6 +1124,34 @@ def _extract_account_balance_summary(account: dict[str, Any]) -> dict[str, Any]:
         "cash_balance": cash_balance,
         "source": available_source or buying_power_source or cash_balance_source or "",
     }
+
+
+def _conservative_available(
+    account: dict[str, Any],
+    keys: Sequence[str],
+) -> tuple[float | None, str]:
+    """Return the MOST CONSERVATIVE available-funds value for the first metric key present.
+
+    For each key in priority order, look at currentBalances and projectedBalances; if either
+    has the value, return the minimum of the two (projected nets out pending/unsettled
+    activity, so it is usually the lower, Schwab-displayed figure). Only if neither current
+    nor projected has the key do we fall back to initialBalances, then move to the next key.
+    """
+    current = account.get("currentBalances") if isinstance(account.get("currentBalances"), dict) else {}
+    projected = account.get("projectedBalances") if isinstance(account.get("projectedBalances"), dict) else {}
+    initial = account.get("initialBalances") if isinstance(account.get("initialBalances"), dict) else {}
+    for key in keys:
+        found: list[tuple[float, str]] = []
+        for section_name, section in (("currentBalances", current), ("projectedBalances", projected)):
+            value = _optional_float(section.get(key))
+            if value is not None:
+                found.append((value, f"{section_name}.{key}"))
+        if found:
+            return min(found, key=lambda item: item[0])
+        initial_value = _optional_float(initial.get(key))
+        if initial_value is not None:
+            return initial_value, f"initialBalances.{key}"
+    return None, ""
 
 
 def _first_balance_value(

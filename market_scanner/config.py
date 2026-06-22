@@ -95,7 +95,10 @@ class ScannerSettings(BaseModel):
 
 
 class OptionSettings(BaseModel):
-    expiries: list[str] = Field(default_factory=lambda: ["1DTE"])
+    # Default to Friday weeklies (the AUTO expansion). 1DTE only suits index ETFs (SPY/QQQ/IWM)
+    # that list daily expiries; ordinary equities have no next-day chain, so 1DTE blocked every
+    # non-index candidate with "no_contracts_for_expiry". THIS_FRIDAY/NEXT_WEEK_FRIDAY is robust.
+    expiries: list[str] = Field(default_factory=lambda: ["THIS_FRIDAY", "NEXT_WEEK_FRIDAY"])
     max_contracts: int = Field(default=5, ge=1, le=10)
     min_debit_per_trade: float = Field(default=100.0, ge=0)
     max_debit_per_trade: float = Field(default=500.0, ge=0)
@@ -209,7 +212,7 @@ def load_settings() -> SettingsLoadResult:
     )
     options_raw.update(
         {
-            "expiries": _split_csv(os.getenv("SCANNER_OPTION_EXPIRIES", ""), options_raw.get("expiries", ["1DTE"])),
+            "expiries": _split_csv(os.getenv("SCANNER_OPTION_EXPIRIES", ""), options_raw.get("expiries", ["THIS_FRIDAY", "NEXT_WEEK_FRIDAY"])),
             "max_contracts": _env_int("SCANNER_MAX_CONTRACTS", int(options_raw.get("max_contracts", 5))),
             "min_debit_per_trade": _env_float(
                 "SCANNER_MIN_DEBIT_PER_TRADE",
@@ -240,9 +243,13 @@ def load_settings() -> SettingsLoadResult:
                 "SCHWAB_MARKET_DATA_ENABLED",
                 bool(schwab_raw.get("market_data_enabled", True)),
             ),
+            # Default OFF: the scanner consumes tokens read-only from the shared store so it
+            # never races the rotating refresh_token. A single owner (the platform / external
+            # refresher) writes new tokens; the scanner only reads. Override per-deployment
+            # with SCHWAB_AUTO_REFRESH_ENABLED=true ONLY if this scanner is the sole token owner.
             "auto_refresh_enabled": _env_bool(
                 "SCHWAB_AUTO_REFRESH_ENABLED",
-                bool(schwab_raw.get("auto_refresh_enabled", True)),
+                bool(schwab_raw.get("auto_refresh_enabled", False)),
             ),
             "token_store_path": _default_token_store_path(),
             "client_id": os.getenv("SCHWAB_CLIENT_ID", schwab_raw.get("client_id", "")),

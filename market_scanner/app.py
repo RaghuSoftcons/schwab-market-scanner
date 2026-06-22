@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import math
 import re
 from contextlib import asynccontextmanager
@@ -9,11 +10,18 @@ from datetime import datetime, time, timedelta, timezone
 from typing import Annotated
 from zoneinfo import ZoneInfo
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query
+from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query
 from fastapi.responses import HTMLResponse
 
+import os
+
+from nt_schwab_bridge.automation import AutomationConfig, AutomationEngine, Tier
 from nt_schwab_bridge.config import BridgeConfig, RiskConfig, ServiceConfig
+from nt_schwab_bridge.dashboard_settings import DEFAULT_STOP_LOSS_PERCENT
 from nt_schwab_bridge.models import OptionProposal, OptionProposalLeg
+from nt_schwab_bridge.gex_exits import protective_stop_premium
+from nt_schwab_bridge.pnl_sync import closes_from_transactions
+from nt_schwab_bridge.trade_log import TradeLogStore
 from nt_schwab_bridge.schwab_adapter import (
     SchwabApiError,
     SchwabMarketDataClient,
@@ -26,6 +34,11 @@ from market_scanner.config import AppSettings, load_settings
 from market_scanner.dashboard import dashboard_html
 from market_scanner.models import (
     AccountSendResult,
+    ClosePositionRequest,
+    ClosePositionResponse,
+    ClosePositionResult,
+    PositionsResponse,
+    PositionView,
     ProposalExitTargetPreview,
     ProposalOrderFillAccountStatus,
     ProposalOrderStatusResponse,
@@ -43,7 +56,17 @@ settings_load = load_settings()
 settings: AppSettings = settings_load.settings
 storage = ScannerStorage(settings.storage.path)
 scanner = MarketScanner(settings)
+trade_log_store = TradeLogStore(settings.storage.path / "trades.jsonl")
 _scheduler_task: asyncio.Task | None = None
+
+# Realized-P&L sync lookback (days). Schwab transactions older than this are not re-scanned.
+_PNL_SYNC_LOOKBACK_DAYS = 14
+
+# Automation tiers (#7). Tier 1 manual -> Tier 2 auto-queue w/ cancel window -> Tier 3 autopilot.
+# These NEVER relax the live-order triple-lock or confirm_live_order; they sit on top of it.
+automation_config = AutomationConfig.from_env()
+automation_engine = AutomationEngine(automation_config)
+kill_switch: dict = {"engaged": False, "reason": ""}
 
 ACCOUNT_ALIASES = {
     "51116118": "Raghu - SEP IRA",
@@ -123,12 +146,391 @@ async def health() -> dict:
 
 @app.get("/dashboard", response_class=HTMLResponse)
 async def dashboard() -> str:
-    return dashboard_html()
+    # Pass the configured API key so the dashboard authenticates protected POSTs when one is set.
+    return dashboard_html(api_key=settings.service.api_key)
 
 
 @app.get("/schwab/status")
 async def schwab_status() -> dict:
     return schwab_market_data_status(_bridge_config()).model_dump(mode="json")
+
+
+def _account_alias(account_id: str) -> str:
+    return ACCOUNT_ALIASES.get(str(account_id), str(account_id))
+
+
+def _pnl_summary_with_aliases() -> dict:
+    summary = trade_log_store.summary()
+    for row in summary.get("pnl_by_account", []) or []:
+        row["account_label"] = _account_alias(row.get("account_id", ""))
+    return summary
+
+
+def _sync_schwab_pnl() -> dict:
+    """Pull recent Schwab transactions for every linked account and record realized P&L for
+    fully-closed option positions (deduped by option_symbol+order_ids so vertical legs do not
+    collide). Never raises -- one bad account is reported in 'errors' and the rest continue."""
+    accounts, _notes = discover_schwab_accounts(_bridge_config())
+    eligible = [a for a in accounts if str(getattr(a, "account_hash", "") or "").strip()]
+    client = SchwabMarketDataClient(settings.schwab)
+    now = datetime.now(timezone.utc)
+    lookback_days = int(os.environ.get("NT_PNL_SYNC_LOOKBACK_DAYS", str(_PNL_SYNC_LOOKBACK_DAYS)))
+    start = now - timedelta(days=lookback_days)
+    new_closes = 0
+    realized_added = 0.0
+    errors: list[str] = []
+    for account in eligible:
+        try:
+            transactions = client.get_transactions(account.account_hash, start, now)
+        except Exception as exc:  # noqa: BLE001 -- one bad account must not stop the sync
+            errors.append(f"{getattr(account, 'id', '?')}: {exc}")
+            continue
+        for close in closes_from_transactions(transactions):
+            if trade_log_store.was_recorded(close.dedup_key):
+                continue
+            recorded = trade_log_store.record_close(
+                symbol=close.underlying,
+                indicator="schwab_sync",
+                account_id=str(getattr(account, "id", "")),
+                entry_price=close.entry_price,
+                exit_price=close.exit_price,
+                contracts=max(1, close.contracts),
+                closed_at=_parse_audit_datetime(close.closed_at),
+                realized_pnl=close.realized_pnl,
+                dedup_key=close.dedup_key,
+            )
+            if recorded is not None:
+                new_closes += 1
+                realized_added = round(realized_added + close.realized_pnl, 2)
+    return {
+        "new_closes": new_closes,
+        "realized_added": realized_added,
+        "accounts_synced": len(eligible),
+        "errors": errors,
+        "summary": _pnl_summary_with_aliases(),
+    }
+
+
+@app.get("/pnl/summary")
+async def pnl_summary() -> dict:
+    """Realized-P&L summary: combined headline + per-account rows (with aliases)."""
+    return _pnl_summary_with_aliases()
+
+
+@app.post("/pnl/sync")
+async def pnl_sync(_: None = Depends(_require_api_key)) -> dict:
+    """Sync realized P&L from Schwab transactions (14-day lookback, deduped) and return the summary."""
+    return await asyncio.to_thread(_sync_schwab_pnl)
+
+
+_TIER_LABELS = {
+    "off": "Off (pure manual)",
+    "1": "Tier 1 - Smart Assist (manual send)",
+    "2": "Tier 2 - Auto-Send w/ 10s cancel",
+    "3": "Tier 3 - Full Autopilot",
+}
+
+
+def _automation_status_payload() -> dict:
+    cfg = automation_config
+    return {
+        "tier": cfg.tier.value,
+        "tier_label": _TIER_LABELS.get(cfg.tier.value, cfg.tier.value),
+        "smart_assist_min_score": cfg.smart_assist_min_score,
+        "manual_review_min_score": cfg.manual_review_min_score,
+        "auto_queue_min_score": cfg.auto_queue_min_score,
+        "cancel_window_seconds": cfg.cancel_window_seconds,
+        "per_account_auto": dict(cfg.per_account_auto),
+        "kill_switch": dict(kill_switch),
+        # The triple-lock is always the final gate regardless of tier.
+        "live_gate_open": settings.service.live_gate_open,
+    }
+
+
+@app.get("/automation/status")
+async def automation_status() -> dict:
+    return _automation_status_payload()
+
+
+@app.post("/automation/tier")
+async def automation_set_tier(payload: dict = Body(...), _: None = Depends(_require_api_key)) -> dict:
+    """Switch tier. Tier 2/3 require explicit confirm=true. Risk gates still apply at every tier."""
+    requested = Tier.parse(str(payload.get("tier", "1")))
+    if requested in (Tier.TIER2, Tier.TIER3) and not bool(payload.get("confirm")):
+        raise HTTPException(status_code=409, detail=f"Switching to {requested.value} requires confirm=true.")
+    automation_config.tier = requested
+    return _automation_status_payload()
+
+
+@app.post("/automation/account-toggle")
+async def automation_account_toggle(payload: dict = Body(...), _: None = Depends(_require_api_key)) -> dict:
+    account_id = str(payload.get("account_id", "")).strip()
+    if not account_id:
+        raise HTTPException(status_code=400, detail="account_id is required.")
+    automation_config.per_account_auto[account_id] = bool(payload.get("enabled"))
+    return _automation_status_payload()
+
+
+@app.post("/automation/kill")
+async def automation_kill(payload: dict = Body(default={})) -> dict:
+    """Engage the kill switch and drop to Tier 1 (manual) immediately."""
+    kill_switch["engaged"] = True
+    kill_switch["reason"] = str((payload or {}).get("reason", "manual"))
+    automation_config.tier = Tier.TIER1
+    return _automation_status_payload()
+
+
+@app.post("/automation/kill/release")
+async def automation_kill_release(_: None = Depends(_require_api_key)) -> dict:
+    kill_switch["engaged"] = False
+    kill_switch["reason"] = ""
+    return _automation_status_payload()
+
+
+@app.get("/automation/kill")
+async def automation_kill_mobile(key: str = Query(default="")) -> dict:
+    """Mobile-accessible kill via GET. Requires AUTOMATION_KILL_KEY to match."""
+    expected = os.environ.get("AUTOMATION_KILL_KEY", "").strip()
+    if not expected or key != expected:
+        raise HTTPException(status_code=401, detail="Invalid or missing kill key.")
+    kill_switch["engaged"] = True
+    kill_switch["reason"] = "mobile"
+    automation_config.tier = Tier.TIER1
+    return _automation_status_payload()
+
+
+# ---- Open positions + Close-now (#9 / the SMCI gap) --------------------------------------
+# AUTHORITATIVE: positions come straight from Schwab (get_positions), never an in-memory
+# tracker, because the scanner places trades directly across accounts.
+
+def _normalize_position(raw: dict, account) -> PositionView | None:
+    if not isinstance(raw, dict):
+        return None
+    instrument = raw.get("instrument") if isinstance(raw.get("instrument"), dict) else {}
+    broker_symbol = str(instrument.get("symbol", "") or "").strip()
+    if not broker_symbol:
+        return None
+    long_qty = _to_float(raw.get("longQuantity"))
+    short_qty = _to_float(raw.get("shortQuantity"))
+    open_pl = raw.get("longOpenProfitLoss")
+    if open_pl is None and raw.get("shortOpenProfitLoss") is None:
+        open_pl = raw.get("currentDayProfitLoss")
+    unrealized = _to_float_or_none(open_pl)
+    if unrealized is None:
+        unrealized = (_to_float(raw.get("longOpenProfitLoss")) + _to_float(raw.get("shortOpenProfitLoss"))) or None
+    return PositionView(
+        account_id=str(getattr(account, "id", "") or ""),
+        account_label=_account_alias(getattr(account, "id", "") or ""),
+        symbol=broker_symbol,
+        underlying=str(instrument.get("underlyingSymbol", "") or ""),
+        asset_type=str(instrument.get("assetType", "OPTION") or "OPTION"),
+        long_qty=long_qty,
+        short_qty=short_qty,
+        net_qty=round(long_qty - short_qty, 4),
+        average_price=_to_float_or_none(raw.get("averagePrice")),
+        market_value=_to_float_or_none(raw.get("marketValue")),
+        unrealized_pnl=unrealized,
+    )
+
+
+def _to_float(value) -> float:
+    result = _to_float_or_none(value)
+    return 0.0 if result is None else result
+
+
+def _to_float_or_none(value) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _aggregate_positions(accounts: list, client: SchwabMarketDataClient) -> tuple[list[PositionView], list[str]]:
+    positions: list[PositionView] = []
+    errors: list[str] = []
+    for account in accounts:
+        account_hash = str(getattr(account, "account_hash", "") or "").strip()
+        if not account_hash:
+            continue
+        try:
+            raw_positions = client.get_positions(account_hash)
+        except (SchwabApiError, SchwabOAuthError) as exc:
+            errors.append(f"{getattr(account, 'id', '?')}: {str(exc)[:200]}")
+            continue
+        for raw in raw_positions:
+            view = _normalize_position(raw, account)
+            if view is not None and view.net_qty != 0:
+                positions.append(view)
+    return positions, errors
+
+
+def _market_close_order_payload(broker_symbol: str, quantity: int, is_long: bool) -> dict:
+    return {
+        "session": "NORMAL",
+        "duration": "DAY",
+        "orderType": "MARKET",
+        "orderStrategyType": "SINGLE",
+        "orderLegCollection": [
+            {
+                "instruction": "SELL_TO_CLOSE" if is_long else "BUY_TO_CLOSE",
+                "quantity": quantity,
+                "instrument": {"symbol": broker_symbol, "assetType": "OPTION"},
+            }
+        ],
+    }
+
+
+def _open_order_ids_for_symbol(account_id: str, broker_symbol: str) -> list[str]:
+    """Best-effort: resting Schwab order ids this scanner submitted for the given option
+    symbol on the given account (from the order audit). Used to cancel the resting OCO/exit
+    before a MARKET close so the position is not double-closed."""
+    order_ids: list[str] = []
+    target = broker_symbol.replace(" ", "")
+    for event in storage.list_order_events():
+        if str(event.get("account_id") or "") != str(account_id):
+            continue
+        if str(event.get("status") or "") != "submitted":
+            continue
+        broker_order_id = str(event.get("broker_order_id") or "").strip()
+        if not broker_order_id:
+            continue
+        payload = event.get("order_payload")
+        if not isinstance(payload, dict):
+            continue
+        if target in json.dumps(payload).replace(" ", ""):
+            order_ids.append(broker_order_id)
+    return list(dict.fromkeys(order_ids))
+
+
+def _close_position_response(
+    *,
+    symbol: str,
+    accounts: list,
+    request: ClosePositionRequest,
+    order_client: SchwabMarketDataClient,
+) -> ClosePositionResponse:
+    live_gate_open = settings.service.live_gate_open
+    accounts_by_id = {a.id: a for a in accounts if getattr(a, "enabled", False)}
+    selected_ids = request.selected_account_ids or list(accounts_by_id.keys())
+    target = symbol.strip()
+    target_compact = target.replace(" ", "")
+
+    positions, position_errors = _aggregate_positions(
+        [accounts_by_id[i] for i in selected_ids if i in accounts_by_id], order_client
+    )
+    matches = [
+        p for p in positions
+        if p.symbol.replace(" ", "") == target_compact or p.underlying.upper() == target.upper()
+    ]
+
+    results: list[ClosePositionResult] = []
+    for position in matches:
+        account = accounts_by_id.get(position.account_id)
+        account_hash = str(getattr(account, "account_hash", "") or "").strip()
+        is_long = position.net_qty > 0
+        qty = int(abs(position.net_qty))
+        reasons: list[str] = []
+        if qty <= 0:
+            reasons.append("position_quantity_zero")
+        if not account_hash:
+            reasons.append("account_hash_missing")
+        if not live_gate_open:
+            reasons.append("live_orders_blocked")
+        elif not request.confirm_live_order:
+            reasons.append("live_order_confirmation_required")
+
+        payload = _market_close_order_payload(position.symbol, qty, is_long) if qty > 0 else None
+        hard_block = any(r in {"position_quantity_zero", "account_hash_missing"} for r in reasons)
+
+        if hard_block or not (live_gate_open and request.confirm_live_order):
+            results.append(
+                ClosePositionResult(
+                    account_id=position.account_id,
+                    account_label=position.account_label,
+                    status="dry_run" if (not hard_block and "live_orders_blocked" in reasons) else "blocked",
+                    reasons=list(dict.fromkeys(reasons or ["close_payload_ready"])),
+                    order_payload=payload,
+                )
+            )
+            continue
+
+        # Live close: cancel any resting orders for this symbol first, then MARKET close.
+        canceled: list[str] = []
+        for order_id in _open_order_ids_for_symbol(position.account_id, position.symbol):
+            try:
+                order_client.cancel_order(account_hash, order_id)
+                canceled.append(order_id)
+            except (SchwabApiError, SchwabOAuthError):
+                pass  # best-effort; the MARKET close still reduces the position
+        try:
+            placed = order_client.place_order(account_hash, payload)
+            result = ClosePositionResult(
+                account_id=position.account_id,
+                account_label=position.account_label,
+                status="submitted",
+                reasons=["market_close_submitted"],
+                broker_order_id=str(placed.get("broker_order_id") or "") or None,
+                canceled_order_ids=canceled,
+                order_payload=payload,
+            )
+        except (SchwabApiError, SchwabOAuthError) as exc:
+            result = ClosePositionResult(
+                account_id=position.account_id,
+                account_label=position.account_label,
+                status="blocked",
+                reasons=[f"market_close_failed:{str(exc)[:200]}"],
+                canceled_order_ids=canceled,
+                order_payload=payload,
+            )
+        results.append(result)
+
+    notes: list[str] = []
+    if not matches:
+        notes.append(f"No open position found for {symbol} in the selected accounts.")
+    notes.extend(f"positions_read_error: {err}" for err in position_errors)
+    status = _aggregate_status(results) if results else "blocked"
+    return ClosePositionResponse(status=status, symbol=symbol, account_results=results, notes=notes)
+
+
+@app.get("/positions", response_model=PositionsResponse)
+async def positions() -> PositionsResponse:
+    """Authoritative open-positions view aggregated across enabled Schwab accounts."""
+    accounts, _notes = discover_schwab_accounts(_bridge_config())
+    client = SchwabMarketDataClient(settings.schwab)
+    views, errors = await asyncio.to_thread(
+        _aggregate_positions, [a for a in accounts if getattr(a, "enabled", False)], client
+    )
+    return PositionsResponse(
+        generated_at=datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+        positions=views,
+        errors=errors,
+    )
+
+
+@app.post("/positions/{symbol}/close", response_model=ClosePositionResponse)
+async def close_position(
+    symbol: str,
+    request: ClosePositionRequest,
+    _: None = Depends(_require_api_key),
+) -> ClosePositionResponse:
+    """Close an open position now: cancel resting orders + MARKET close. Triple-lock + confirm gated."""
+    accounts, _notes = discover_schwab_accounts(_bridge_config())
+    client = SchwabMarketDataClient(settings.schwab)
+    response = await asyncio.to_thread(
+        lambda: _close_position_response(symbol=symbol, accounts=accounts, request=request, order_client=client)
+    )
+    storage.append_order_event(
+        {
+            "event_type": "position_close_batch",
+            "symbol": symbol,
+            "status": response.status,
+            "recorded_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+            "account_results": [r.model_dump(mode="json") for r in response.account_results],
+        }
+    )
+    return response
 
 
 @app.get("/accounts")
@@ -418,6 +820,10 @@ async def proposal_order_status(
         str | None,
         Query(description="Comma-separated exit target percentages, for example 25,50,60."),
     ] = None,
+    stop_loss_percent: Annotated[
+        float,
+        Query(ge=0, le=99, description="Protective OCO stop, percent below entry fill (single-leg). 0 disables the stop."),
+    ] = float(DEFAULT_STOP_LOSS_PERCENT),
 ) -> ProposalOrderStatusResponse:
     proposal = storage.find_proposal(proposal_id)
     if proposal is None:
@@ -431,6 +837,7 @@ async def proposal_order_status(
         accounts=accounts,
         order_client=client,
         target_percentages=_parse_target_percentages(target_percentages),
+        stop_loss_percent=stop_loss_percent,
     )
 
 
@@ -444,6 +851,10 @@ async def send_exit_target(
         str | None,
         Query(description="Comma-separated exit target percentages, for example 20,50,60."),
     ] = None,
+    stop_loss_percent: Annotated[
+        float,
+        Query(ge=0, le=99, description="Protective OCO stop, percent below entry fill (single-leg). 0 disables the stop."),
+    ] = float(DEFAULT_STOP_LOSS_PERCENT),
 ) -> SendProposalResponse:
     proposal = storage.find_proposal(proposal_id)
     if proposal is None:
@@ -457,6 +868,7 @@ async def send_exit_target(
         accounts=accounts,
         order_client=client,
         target_percentages=_parse_target_percentages(target_percentages),
+        stop_loss_percent=stop_loss_percent,
     )
     response = _send_exit_target_response(
         proposal=proposal,
@@ -673,6 +1085,7 @@ def _proposal_order_status_response(
     accounts: list,
     order_client: SchwabMarketDataClient,
     target_percentages: list[float],
+    stop_loss_percent: float = 0.0,
 ) -> ProposalOrderStatusResponse:
     submitted_by_account = _submitted_entry_events_by_account(proposal.id)
     accounts_by_id = {account.id: account for account in accounts if getattr(account, "enabled", False)}
@@ -730,6 +1143,7 @@ def _proposal_order_status_response(
                 fill["average_fill_price"],
                 fill["filled_quantity"],
                 target_percentages,
+                stop_loss_percent=stop_loss_percent,
             )
             statuses.append(
                 ProposalOrderFillAccountStatus(
@@ -897,6 +1311,11 @@ def _target_preview_for_account(
 
 
 def _schwab_exit_order_payload(proposal: OptionProposal, target: ProposalExitTargetPreview) -> dict:
+    # Single-leg options with a protective stop become a true OCO bracket (LIMIT target
+    # OCO STOP loss) so the resting exit covers both sides. Verticals/multi-leg and
+    # stop-disabled (stop_trigger_price == 0) fall back to the legacy target-only SINGLE.
+    if proposal.structure == "single" and target.stop_trigger_price > 0:
+        return _schwab_single_option_oco_exit_payload(proposal, target)
     return {
         "session": "NORMAL",
         "duration": "GOOD_TILL_CANCEL",
@@ -905,17 +1324,49 @@ def _schwab_exit_order_payload(proposal: OptionProposal, target: ProposalExitTar
         "quantity": target.qty,
         "price": f"{target.target_limit_price:.2f}",
         "orderStrategyType": "SINGLE",
-        "orderLegCollection": [
-            {
-                "instruction": "SELL_TO_CLOSE" if leg.action == "BUY" else "BUY_TO_CLOSE",
-                "quantity": target.qty,
-                "instrument": {
-                    "symbol": leg.broker_symbol or fallback_broker_option_symbol(leg),
-                    "assetType": "OPTION",
-                },
-            }
-            for leg in proposal.legs
-        ],
+        "orderLegCollection": _schwab_exit_order_legs(proposal, target.qty),
+    }
+
+
+def _schwab_exit_order_legs(proposal: OptionProposal, quantity: int) -> list[dict]:
+    return [
+        {
+            "instruction": "SELL_TO_CLOSE" if leg.action == "BUY" else "BUY_TO_CLOSE",
+            "quantity": quantity,
+            "instrument": {
+                "symbol": leg.broker_symbol or fallback_broker_option_symbol(leg),
+                "assetType": "OPTION",
+            },
+        }
+        for leg in proposal.legs
+    ]
+
+
+def _schwab_single_option_oco_exit_payload(proposal: OptionProposal, target: ProposalExitTargetPreview) -> dict:
+    order_legs = _schwab_exit_order_legs(proposal, target.qty)
+    target_child = {
+        "session": "NORMAL",
+        "duration": "GOOD_TILL_CANCEL",
+        "orderType": "LIMIT",
+        "complexOrderStrategyType": "NONE",
+        "quantity": target.qty,
+        "price": f"{target.target_limit_price:.2f}",
+        "orderStrategyType": "SINGLE",
+        "orderLegCollection": order_legs,
+    }
+    stop_child = {
+        "session": "NORMAL",
+        "duration": "GOOD_TILL_CANCEL",
+        "orderType": "STOP",
+        "complexOrderStrategyType": "NONE",
+        "quantity": target.qty,
+        "stopPrice": f"{target.stop_trigger_price:.2f}",
+        "orderStrategyType": "SINGLE",
+        "orderLegCollection": order_legs,
+    }
+    return {
+        "orderStrategyType": "OCO",
+        "childOrderStrategies": [target_child, stop_child],
     }
 
 
@@ -1254,6 +1705,8 @@ def _exit_target_previews(
     average_fill_price: float | None,
     filled_quantity: float,
     target_percentages: list[float],
+    *,
+    stop_loss_percent: float = 0.0,
 ) -> list[ProposalExitTargetPreview]:
     if average_fill_price is None or filled_quantity <= 0:
         return []
@@ -1261,6 +1714,35 @@ def _exit_target_previews(
     if filled_contracts <= 0:
         return []
     allocations = _exit_target_allocations(proposal, filled_contracts, target_percentages)
+    # Protective stop applies only to single-leg options (the OCO bracket path). A STOP on a
+    # NET_CREDIT vertical close is not supported here, so verticals stay target-only.
+    #
+    # Effective stop = the TIGHTER (more protective) of:
+    #   (a) the configured percent stop (a guaranteed protection floor), and
+    #   (b) the capped gamma-wall stop, only when NT_GEX_WALL_EXITS is on.
+    # Higher stop premium = smaller loss = tighter, so we take max(). The gamma wall can only
+    # pull the stop IN (exit earlier), never loosen it, and both are already capped at max loss.
+    stop_price = 0.0
+    if proposal.structure == "single":
+        percent_stop = (
+            _option_stop_trigger_price(average_fill_price, stop_loss_percent)
+            if stop_loss_percent > 0
+            else 0.0
+        )
+        gex_stop: float | None = None
+        if (
+            os.environ.get("NT_GEX_WALL_EXITS", "false").strip().lower() == "true"
+            and proposal.gex_stop_loss_dollars
+            and filled_contracts > 0
+        ):
+            gex_stop = protective_stop_premium(
+                fill_price=float(average_fill_price),
+                contracts=filled_contracts,
+                stop_loss_dollars=float(proposal.gex_stop_loss_dollars),
+                max_loss_dollars=float(proposal.max_loss or proposal.gex_stop_loss_dollars),
+            )
+        _stop_candidates = [s for s in (percent_stop, gex_stop) if s and s > 0]
+        stop_price = max(_stop_candidates) if _stop_candidates else 0.0
     previews: list[ProposalExitTargetPreview] = []
     for target_index, quantity, target_percent in allocations:
         target_price = round(average_fill_price * (1 + target_percent / 100), 2)
@@ -1274,8 +1756,15 @@ def _exit_target_previews(
                 target_percent=round(float(target_percent), 4),
                 entry_fill_price=round(float(average_fill_price), 4),
                 target_limit_price=target_price,
+                stop_loss_percent=round(float(stop_loss_percent), 4),
+                stop_trigger_price=stop_price,
                 estimated_profit=estimated_profit,
                 tos_exit_order_line=_tos_exit_order_line_for_proposal(proposal, quantity, target_price),
+                tos_stop_order_line=(
+                    _tos_stop_order_line_for_proposal(proposal, quantity, stop_price)
+                    if stop_price > 0
+                    else ""
+                ),
             )
         )
     return previews
@@ -1312,6 +1801,22 @@ def _tos_exit_order_line_for_proposal(proposal: OptionProposal, quantity: int, l
         f"SELL -{quantity} {structure} {proposal.symbol.upper()} 100 "
         f"{proposal.expiry:%d %b %y} {strike_text} {right} @{limit_price:.2f} LMT GTC"
     ).upper()
+
+
+def _tos_stop_order_line_for_proposal(proposal: OptionProposal, quantity: int, stop_price: float) -> str:
+    strikes = [leg.strike for leg in proposal.legs]
+    structure = "VERTICAL" if proposal.structure == "debit_vertical" else "SINGLE"
+    right = proposal.legs[0].right if proposal.legs else "CALL"
+    strike_text = "/".join(_format_strike(strike) for strike in strikes)
+    return (
+        f"SELL -{quantity} {structure} {proposal.symbol.upper()} 100 "
+        f"{proposal.expiry:%d %b %y} {strike_text} {right} @{stop_price:.2f} STP GTC"
+    ).upper()
+
+
+def _option_stop_trigger_price(entry_fill_price: float, stop_loss_percent: float) -> float:
+    percent = max(1.0, min(99.0, float(stop_loss_percent)))
+    return max(0.01, round(float(entry_fill_price) * (1 - percent / 100), 2))
 
 
 def _format_strike(strike: float) -> str:

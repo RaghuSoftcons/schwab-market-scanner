@@ -6,3 +6,7 @@ __pycache__/
 config.yaml
 schwab_tokens.json
 *.log
+
+# Google Drive artifacts
+desktop.ini
+**/desktop.ini

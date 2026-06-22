@@ -247,6 +247,12 @@ class OptionProposal(BaseModel):
     reasons: list[str] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
     dry_run: bool = True
+    # GEX wall exits (Phase 5): when NT_GEX_WALL_EXITS is on and chain gamma is available,
+    # the call wall feeds the target and the put wall feeds the stop. gex_stop_loss_dollars is
+    # the capped stop loss -> never exceeds max_loss.
+    gex_target_underlying: float | None = None
+    gex_stop_underlying: float | None = None
+    gex_stop_loss_dollars: float | None = None
 
 
 class OptionProposalSource(BaseModel):

@@ -108,6 +108,48 @@ class SendExitTargetRequest(BaseModel):
     order_note: str = Field(default="", max_length=500)
 
 
+class ClosePositionRequest(BaseModel):
+    selected_account_ids: list[str] = Field(default_factory=list)
+    confirm_live_order: bool = False
+
+
+class PositionView(BaseModel):
+    account_id: str
+    account_label: str
+    symbol: str  # broker option symbol, e.g. "SMCI  260626C00045000"
+    underlying: str = ""
+    asset_type: str = "OPTION"
+    long_qty: float = 0.0
+    short_qty: float = 0.0
+    net_qty: float = 0.0
+    average_price: float | None = None
+    market_value: float | None = None
+    unrealized_pnl: float | None = None
+
+
+class PositionsResponse(BaseModel):
+    generated_at: str
+    positions: list[PositionView] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+
+
+class ClosePositionResult(BaseModel):
+    account_id: str
+    account_label: str
+    status: Literal["blocked", "dry_run", "submitted"]
+    reasons: list[str] = Field(default_factory=list)
+    broker_order_id: str | None = None
+    canceled_order_ids: list[str] = Field(default_factory=list)
+    order_payload: dict[str, Any] | None = None
+
+
+class ClosePositionResponse(BaseModel):
+    status: Literal["blocked", "dry_run", "submitted"]
+    symbol: str
+    account_results: list[ClosePositionResult] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
 class AccountSendResult(BaseModel):
     account_id: str
     account_label: str
@@ -134,8 +176,11 @@ class ProposalExitTargetPreview(BaseModel):
     target_percent: float = Field(gt=0)
     entry_fill_price: float = Field(gt=0)
     target_limit_price: float = Field(gt=0)
+    stop_loss_percent: float = Field(default=50.0, ge=0)
+    stop_trigger_price: float = Field(default=0, ge=0)
     estimated_profit: float = Field(ge=0)
     tos_exit_order_line: str = ""
+    tos_stop_order_line: str = ""
 
 
 class ProposalOrderFillAccountStatus(BaseModel):
