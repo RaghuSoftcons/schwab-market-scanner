@@ -150,9 +150,13 @@ async def health() -> dict:
 
 
 @app.get("/dashboard", response_class=HTMLResponse)
-async def dashboard() -> str:
+async def dashboard() -> HTMLResponse:
     # Pass the configured API key so the dashboard authenticates protected POSTs when one is set.
-    return dashboard_html(api_key=settings.service.api_key)
+    # no-store: the dashboard JS is inlined, so a cached page hides new deploys -- never cache it.
+    return HTMLResponse(
+        dashboard_html(api_key=settings.service.api_key),
+        headers={"Cache-Control": "no-store, max-age=0"},
+    )
 
 
 @app.get("/schwab/status")
