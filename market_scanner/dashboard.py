@@ -165,6 +165,7 @@ _DASHBOARD_TEMPLATE = """<!doctype html>
     th { color: var(--muted); font-size: 12px; text-transform: uppercase; background: #f8fafc; }
     tr.candidate-row { cursor: pointer; }
     tr.candidate-row.selected { background: #c6ecd6; box-shadow: inset 4px 0 0 var(--green, #1a8f4c); }
+    .pos-sort { display: flex; align-items: center; gap: 5px; margin-bottom: 8px; }
     .pnl-headline { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; margin-bottom: 9px; }
     .pnl-row, .pos-row, .auto-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 9px; border: 1px solid var(--line); border-radius: 8px; background: white; margin-bottom: 6px; font-size: 13px; flex-wrap: wrap; }
     .pnl-row .label, .pos-row .label { text-transform: none; }
@@ -760,39 +761,68 @@ async function loadPositions(manual) {
   }
 }
 
+function setPositionsSort(key) {
+  appState.positionsSort = key;
+  renderPositions();
+}
+
+function sortedPositions() {
+  const positions = (appState.positions || []).slice();
+  const key = appState.positionsSort || "unrealized";
+  positions.sort((a, b) => {
+    if (key === "symbol") return String(a.symbol).localeCompare(String(b.symbol));
+    if (key === "account") return String(a.account_label || a.account_id).localeCompare(String(b.account_label || b.account_id));
+    // unrealized: highest P&L first, nulls last
+    const av = a.unrealized_pnl, bv = b.unrealized_pnl;
+    if (av == null && bv == null) return 0;
+    if (av == null) return 1;
+    if (bv == null) return -1;
+    return bv - av;
+  });
+  return positions;
+}
+
 function renderPositions() {
   const body = byId("positions-body");
   if (!body) return;
-  const positions = appState.positions || [];
+  const positions = sortedPositions();
   const note = appState.positionsNote ? `<div class="muted tiny" style="margin-top:6px;">${esc(appState.positionsNote)}</div>` : "";
+  const active = appState.positionsSort || "unrealized";
+  const sortControl = `<div class="pos-sort"><span class="muted tiny">Sort:</span>${
+    [["unrealized", "Unrealized"], ["account", "Account"], ["symbol", "Symbol"]].map(([k, lbl]) =>
+      `<button class="segment-button ${active === k ? "active" : ""}" type="button" onclick="setPositionsSort('${k}')">${lbl}</button>`
+    ).join("")
+  }</div>`;
   if (!positions.length) {
-    body.innerHTML = `<div class="empty">No dashboard-tracked positions this session.</div>${note}`;
+    body.innerHTML = `${sortControl}<div class="empty">No dashboard-tracked positions this session.</div>${note}`;
     return;
   }
-  const rows = positions.map((pos, index) => {
+  const rows = positions.map((pos) => {
     const dir = String(pos.direction || "").toUpperCase();
-    const legs = (pos.legs || []).map(l => `${esc(l.action)} ${esc(l.broker_symbol)} ×${l.qty}`).join(" / ");
-    const accts = pos.account_count || (pos.account_ids || []).length;
-    return `<div class="pos-row" data-pos-index="${index}">
-      <span class="label"><strong>${esc(pos.symbol)}</strong> <span class="${dir === "SHORT" ? "bad-text" : "good-text"}">${esc(dir)}</span> <span class="muted">${esc(pos.source || "")}</span></span>
-      <span class="muted tiny">${esc(legs)} · ${accts} acct${accts === 1 ? "" : "s"}${(pos.account_ids || []).length ? " (" + esc((pos.account_ids || []).join(", ")) + ")" : ""}</span>
-      <button class="danger" onclick="closePosition(${index})">Close now</button>
-      <div class="send-status" data-pos-status="${index}"></div>
+    const sym = esc(pos.symbol).replace(/'/g, "\\'");
+    const acct = esc(pos.account_id).replace(/'/g, "\\'");
+    const label = esc(pos.account_label || pos.account_id).replace(/'/g, "\\'");
+    const upnl = (pos.unrealized_pnl === null || pos.unrealized_pnl === undefined)
+      ? `<span class="muted">uPnL --</span>`
+      : `uPnL <span class="${pnlClass(pos.unrealized_pnl)}">${moneySigned(pos.unrealized_pnl)}</span>`;
+    const statusId = `pos-status-${esc(pos.symbol)}-${esc(pos.account_id)}`;
+    return `<div class="pos-row">
+      <span class="label"><strong>${esc(pos.symbol)}</strong> <span class="${dir === "SHORT" ? "bad-text" : "good-text"}">${esc(dir)}</span> <span class="muted">${esc(pos.account_label || pos.account_id)}</span></span>
+      <span class="muted tiny">${esc(pos.broker_symbol)} ×${pos.qty} · ${upnl}</span>
+      <button class="danger" onclick="closePosition('${sym}','${acct}','${label}','${statusId}')">Close now</button>
+      <div class="send-status" id="${statusId}"></div>
     </div>`;
   }).join("");
-  body.innerHTML = rows + note;
+  body.innerHTML = sortControl + rows + note;
 }
 
-async function closePosition(index) {
-  const pos = (appState.positions || [])[index];
-  if (!pos) return;
-  const status = document.querySelector(`[data-pos-status="${index}"]`);
-  const accts = pos.account_count || (pos.account_ids || []).length;
-  const ok = window.confirm(`Close ${pos.symbol} across ${accts} account${accts === 1 ? "" : "s"}? This cancels resting orders and sends MARKET close orders.`);
+async function closePosition(symbol, accountId, accountLabel, statusId) {
+  const status = statusId ? byId(statusId) : null;
+  const ok = window.confirm(`Close ${symbol} in ${accountLabel}? This cancels resting orders and sends a MARKET close order.`);
   if (!ok) { if (status) status.textContent = "Close cancelled."; return; }
   if (status) status.textContent = "Sending close order...";
-  const body = { confirm_live_order: true };  // close every tracked account for this symbol
-  const result = await fetchJson(`/positions/${encodeURIComponent(pos.symbol)}/close`, authOptions("POST", body));
+  const body = { selected_account_ids: [accountId], confirm_live_order: true };
+  const result = await fetchJson(`/positions/${encodeURIComponent(symbol)}/close`, authOptions("POST", body));
   if (!result.ok) {
     if (status) status.textContent = result.data?.detail || result.data?.body || `HTTP ${result.status}`;
     return;

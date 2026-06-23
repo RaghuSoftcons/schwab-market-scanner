@@ -122,15 +122,19 @@ class TrackedPositionLeg(BaseModel):
 
 
 class TrackedPosition(BaseModel):
-    # A position THIS dashboard sent live this session (cleared on restart). Only these are
-    # eligible for Close-now -- not every holding in the Schwab account.
+    # One row per (account, symbol) the dashboard sent live this session (cleared on restart).
+    # Only these are eligible for Close-now -- not every holding in the Schwab account.
+    # Unrealized P&L is enriched live from Schwab for the tracked symbol/account.
     symbol: str  # underlying, e.g. "SMCI"
+    account_id: str = ""  # raw id (used for the close request)
+    account_label: str = ""  # alias for display
     direction: str = ""
     structure: str = "single"
     source: str = "scanner"
-    legs: list[TrackedPositionLeg] = Field(default_factory=list)
-    account_ids: list[str] = Field(default_factory=list)  # display aliases
-    account_count: int = 0
+    broker_symbol: str = ""  # primary leg broker symbol
+    qty: int = 0
+    unrealized_pnl: float | None = None
+    market_value: float | None = None
     sent_at: str = ""
 
 

@@ -55,13 +55,36 @@ def test_register_and_list_tracked_position() -> None:
     _reset()
     accts = _accounts()
     _register_active_position(_proposal(), ["66502618", "47169783"], accts, {"66502618": "OID1", "47169783": "OID2"})
-    resp = _tracked_positions_response()
-    assert len(resp.positions) == 1
-    pos = resp.positions[0]
-    assert pos.symbol == "SMCI"
-    assert pos.account_count == 2
-    assert pos.legs[0].broker_symbol == "SMCI  260626C00045000"
+    resp = _tracked_positions_response()  # no client -> no live P&L enrichment
+    assert len(resp.positions) == 2  # one row per account
+    assert {r.symbol for r in resp.positions} == {"SMCI"}
+    assert {r.account_id for r in resp.positions} == {"66502618", "47169783"}
+    assert all(r.broker_symbol == "SMCI  260626C00045000" for r in resp.positions)
+    assert all(r.unrealized_pnl is None for r in resp.positions)  # not enriched without a client
     assert "this session" in resp.note
+    _reset()
+
+
+class _PnlClient:
+    """Stub returning Schwab positions so unrealized P&L enrichment can be exercised."""
+
+    def get_positions(self, account_hash):
+        pnl = 150.0 if account_hash == "HASH1" else -80.0
+        return [{
+            "instrument": {"symbol": "SMCI  260626C00045000", "assetType": "OPTION"},
+            "longOpenProfitLoss": pnl,
+            "marketValue": 700.0,
+        }]
+
+
+def test_tracked_positions_enriched_with_unrealized_pnl() -> None:
+    _reset()
+    _register_active_position(_proposal(), ["66502618", "47169783"], _accounts(), {"66502618": "OID1", "47169783": "OID2"})
+    resp = _tracked_positions_response(client=_PnlClient())
+    by_acct = {r.account_id: r for r in resp.positions}
+    assert by_acct["66502618"].unrealized_pnl == 150.0
+    assert by_acct["47169783"].unrealized_pnl == -80.0
+    assert by_acct["66502618"].market_value == 700.0
     _reset()
 
 

@@ -350,29 +350,64 @@ def _market_close_legs(legs: list[dict]) -> list[dict]:
     ]
 
 
-def _tracked_positions_response() -> PositionsResponse:
-    rows = [
-        TrackedPosition(
-            symbol=p["symbol"],
-            direction=p.get("direction", ""),
-            structure=p.get("structure", "single"),
-            source=p.get("source", "scanner"),
-            legs=[
-                TrackedPositionLeg(
-                    action=leg.get("action", ""),
-                    qty=int(leg.get("qty", 0) or 0),
-                    broker_symbol=leg.get("broker_symbol", ""),
-                    right=str(leg.get("right", "") or ""),
-                    strike=float(leg.get("strike", 0) or 0),
+def _pos_float(value) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _tracked_positions_response(client: SchwabMarketDataClient | None = None) -> PositionsResponse:
+    """One row per (account, symbol) tracked this session. When a client is given, enrich each
+    row with live unrealized P&L from Schwab (matched by the tracked option symbol). get_positions
+    is cached per account_hash so we make at most one call per distinct account."""
+    cache: dict[str, list] = {}
+
+    def account_positions(account_hash: str) -> list:
+        if account_hash not in cache:
+            try:
+                cache[account_hash] = client.get_positions(account_hash) if (client and account_hash) else []
+            except Exception:  # noqa: BLE001 -- enrichment is best-effort; show the row without P&L
+                cache[account_hash] = []
+        return cache[account_hash]
+
+    rows: list[TrackedPosition] = []
+    for p in active_positions.values():
+        leg_syms = {str(leg.get("broker_symbol", "")).replace(" ", "") for leg in p.get("legs", [])}
+        primary = p["legs"][0] if p.get("legs") else {}
+        for aid in p.get("account_ids", []):
+            account_hash = str(p.get("account_hashes", {}).get(aid, "") or "")
+            unrealized = None
+            market_value = None
+            if client and account_hash:
+                total_upnl = 0.0
+                total_mv = 0.0
+                matched = False
+                for raw in account_positions(account_hash):
+                    instrument = raw.get("instrument") if isinstance(raw.get("instrument"), dict) else {}
+                    sym = str((instrument or {}).get("symbol", "")).replace(" ", "")
+                    if sym in leg_syms:
+                        matched = True
+                        total_upnl += _pos_float(raw.get("longOpenProfitLoss")) + _pos_float(raw.get("shortOpenProfitLoss"))
+                        total_mv += _pos_float(raw.get("marketValue"))
+                if matched:
+                    unrealized = round(total_upnl, 2)
+                    market_value = round(total_mv, 2)
+            rows.append(
+                TrackedPosition(
+                    symbol=p["symbol"],
+                    account_id=aid,
+                    account_label=_account_alias(aid),
+                    direction=p.get("direction", ""),
+                    structure=p.get("structure", "single"),
+                    source=p.get("source", "scanner"),
+                    broker_symbol=str(primary.get("broker_symbol", "") or ""),
+                    qty=int(primary.get("qty", 0) or 0),
+                    unrealized_pnl=unrealized,
+                    market_value=market_value,
+                    sent_at=p.get("sent_at", ""),
                 )
-                for leg in p.get("legs", [])
-            ],
-            account_ids=[_account_alias(aid) for aid in p.get("account_ids", [])],
-            account_count=len(p.get("account_ids", [])),
-            sent_at=p.get("sent_at", ""),
-        )
-        for p in active_positions.values()
-    ]
+            )
     return PositionsResponse(
         generated_at=datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
         positions=rows,
@@ -488,18 +523,25 @@ def _close_position_response(
 
     status = _aggregate_status(results) if results else "blocked"
     notes: list[str] = []
-    # Only drop from the tracker when every selected account closed AND we covered all accounts.
-    fully_closed = bool(results) and all(r.status == "submitted" for r in results) and set(selected) >= set(pos["account_ids"])
-    if fully_closed:
-        active_positions.pop(symbol.upper(), None)
-        notes.append("Position closed and removed from the tracker.")
+    # Remove only the accounts that actually closed; drop the symbol entirely when none remain.
+    submitted_accounts = {r.account_id for r in results if r.status == "submitted"}
+    if submitted_accounts:
+        pos["account_ids"] = [a for a in pos["account_ids"] if a not in submitted_accounts]
+        pos["account_hashes"] = {k: v for k, v in pos["account_hashes"].items() if k in pos["account_ids"]}
+        if not pos["account_ids"]:
+            active_positions.pop(symbol.upper(), None)
+            notes.append("Position fully closed; removed from the tracker.")
+        else:
+            notes.append(f"Closed {len(submitted_accounts)} account(s); {len(pos['account_ids'])} still open.")
     return ClosePositionResponse(status=status, symbol=symbol, account_results=results, notes=notes)
 
 
 @app.get("/positions", response_model=PositionsResponse)
 async def positions() -> PositionsResponse:
-    """Dashboard-tracked open positions (live sends this session; cleared on restart)."""
-    return _tracked_positions_response()
+    """Dashboard-tracked open positions (live sends this session; cleared on restart),
+    enriched with live unrealized P&L from Schwab. No tracked positions -> no Schwab calls."""
+    client = SchwabMarketDataClient(settings.schwab) if active_positions else None
+    return await asyncio.to_thread(_tracked_positions_response, client)
 
 
 @app.post("/positions/{symbol}/close", response_model=ClosePositionResponse)
