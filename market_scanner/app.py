@@ -164,8 +164,28 @@ async def schwab_status() -> dict:
     return schwab_market_data_status(_bridge_config()).model_dump(mode="json")
 
 
+def _resolve_account_alias(account_id: str) -> str | None:
+    """Resolve an alias from an account id/number. Handles the 'schwab_<number>' id form by
+    extracting digits, then exact- or unique-suffix-matching ACCOUNT_ALIASES (keyed by number)."""
+    digits = "".join(ch for ch in str(account_id) if ch.isdigit())
+    if not digits:
+        return None
+    if digits in ACCOUNT_ALIASES:
+        return ACCOUNT_ALIASES[digits]
+    matches = [alias for number, alias in ACCOUNT_ALIASES.items() if len(digits) >= 4 and number.endswith(digits)]
+    return matches[0] if len(matches) == 1 else None
+
+
 def _account_alias(account_id: str) -> str:
-    return ACCOUNT_ALIASES.get(str(account_id), str(account_id))
+    """Display label as 'number (alias)' (Unified-Platform format), e.g. '66502618 (Individual)'.
+    Falls back to the bare number, then the raw id, when no alias is known."""
+    digits = "".join(ch for ch in str(account_id) if ch.isdigit())
+    alias = _resolve_account_alias(account_id)
+    if alias and digits:
+        return f"{digits} ({alias})"
+    if alias:
+        return alias
+    return digits or str(account_id)
 
 
 def _pnl_summary_with_aliases() -> dict:
