@@ -113,35 +113,40 @@ class ClosePositionRequest(BaseModel):
     confirm_live_order: bool = False
 
 
-class TrackedPositionLeg(BaseModel):
-    action: str = ""  # opening action: BUY or SELL
-    qty: int = 0
-    broker_symbol: str = ""  # e.g. "SMCI  260626C00045000"
-    right: str = ""
-    strike: float = 0.0
+class CloseContractRequest(BaseModel):
+    # Close a single option contract in one account via a MARKET order (used by both
+    # the tracked and the full-Schwab Open Positions views).
+    account_id: str
+    broker_symbol: str
+    qty: int = Field(ge=1)
+    is_long: bool = True
+    confirm_live_order: bool = False
 
 
-class TrackedPosition(BaseModel):
-    # One row per (account, symbol) the dashboard sent live this session (cleared on restart).
-    # Only these are eligible for Close-now -- not every holding in the Schwab account.
-    # Unrealized P&L is enriched live from Schwab for the tracked symbol/account.
-    symbol: str  # underlying, e.g. "SMCI"
-    account_id: str = ""  # raw id (used for the close request)
-    account_label: str = ""  # alias for display
-    direction: str = ""
-    structure: str = "single"
-    source: str = "scanner"
-    broker_symbol: str = ""  # primary leg broker symbol
-    qty: int = 0
+class PositionRow(BaseModel):
+    # Unified row for the Open Positions table (Unified-Platform style). Used by both modes:
+    #   tracked -> positions THIS dashboard sent this session; all -> every Schwab option position.
+    account_id: str = ""        # raw id (for the close request)
+    account_label: str = ""     # alias for display
+    symbol: str = ""            # broker option symbol, e.g. "BRKB  260918C00490000"
+    underlying: str = ""
+    qty: float = 0.0            # signed net quantity (+long / -short)
+    avg: float | None = None    # average open price
+    mark: float | None = None   # current mark price
     unrealized_pnl: float | None = None
-    market_value: float | None = None
+    direction: str = ""
+    closeable: bool = False     # single-leg -> Close button; spread -> view-only
+    is_spread: bool = False
+    source: str = "schwab"      # tracked | schwab
     sent_at: str = ""
 
 
 class PositionsResponse(BaseModel):
     generated_at: str
-    positions: list[TrackedPosition] = Field(default_factory=list)
+    mode: str = "tracked"       # tracked | all
+    positions: list[PositionRow] = Field(default_factory=list)
     note: str = ""
+    errors: list[str] = Field(default_factory=list)
 
 
 class ClosePositionResult(BaseModel):

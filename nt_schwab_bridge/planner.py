@@ -25,6 +25,15 @@ from nt_schwab_bridge.models import (
 )
 
 
+# Base score components and their maximums, for the dashboard value/max breakdown (e.g. 36/40).
+_BASE_SCORE_LABELS = (
+    ("delta", "Delta fit", 40),
+    ("liquidity", "Liquidity", 30),
+    ("oi", "Open interest", 15),
+    ("debit", "Cost", 15),
+)
+
+
 class OptionProposalPlanner:
     """Build ranked dry-run option proposals from normalized signal records."""
 
@@ -241,7 +250,9 @@ class OptionProposalPlanner:
         debit = round(send_limit_price * 100 * quantity, 2)
 
         leg = _proposal_leg("BUY", contract, quantity, contract.ask)
-        score = self._score([contract], debit=debit, expiry_label=expiry_label)
+        components = self._score_components([contract], debit=debit, expiry_label=expiry_label)
+        score = round(sum(components.values()), 4)
+        score_breakdown = self._base_breakdown(components)
         price_protection = self._price_protection_note(contract.symbol, natural_limit_price, send_limit_price)
         reasons = ["dry_run_proposal", "single_long_option", *(extra_reasons or [])]
         if allow_max_loss_override and debit > self.config.max_debit_per_trade:
@@ -278,6 +289,7 @@ class OptionProposalPlanner:
             price_protection=price_protection,
             net_delta=_net_delta([("BUY", contract)], quantity),
             score=score,
+            score_breakdown=score_breakdown,
             tos_order_line=tos_order_line,
             exit_targets=self._exit_targets(
                 signal,
@@ -346,7 +358,9 @@ class OptionProposalPlanner:
             _proposal_leg("BUY", long_contract, quantity, long_contract.ask),
             _proposal_leg("SELL", short_contract, quantity, short_contract.bid),
         ]
-        score = self._score([long_contract, short_contract], debit=debit, expiry_label=expiry_label)
+        components = self._score_components([long_contract, short_contract], debit=debit, expiry_label=expiry_label)
+        score = round(sum(components.values()), 4)
+        score_breakdown = self._base_breakdown(components)
         tos_order_line = _tos_order_line(
             symbol=long_contract.symbol,
             structure="VERTICAL",
@@ -380,6 +394,7 @@ class OptionProposalPlanner:
             width=width,
             net_delta=_net_delta([("BUY", long_contract), ("SELL", short_contract)], quantity),
             score=score,
+            score_breakdown=score_breakdown,
             tos_order_line=tos_order_line,
             exit_targets=self._exit_targets(
                 signal,
@@ -518,7 +533,8 @@ class OptionProposalPlanner:
         low, high = sorted(float(item) for item in band)
         return low, high
 
-    def _score(self, contracts: Sequence[OptionContractSnapshot], debit: float, expiry_label: str) -> float:
+    def _score_components(self, contracts: Sequence[OptionContractSnapshot], debit: float, expiry_label: str) -> dict[str, float]:
+        """The four base score components (each a value out of its max in _BASE_SCORE_LABELS)."""
         long_contract = contracts[0]
         low, high = self._delta_band(expiry_label)
         target_delta = (low + high) / 2
@@ -532,7 +548,23 @@ class OptionProposalPlanner:
         oi_score = min(15.0, (min(open_interest_values) / 100) if open_interest_values else 5.0)
         debit_span = max(self.config.max_debit_per_trade - self.config.min_debit_per_trade, 1)
         debit_score = max(0.0, 15 - ((debit - self.config.min_debit_per_trade) / debit_span * 10))
-        return round(delta_score + liquidity_score + oi_score + debit_score, 4)
+        return {
+            "delta": round(delta_score, 4),
+            "liquidity": round(liquidity_score, 4),
+            "oi": round(oi_score, 4),
+            "debit": round(debit_score, 4),
+        }
+
+    def _base_breakdown(self, components: dict[str, float]) -> list[dict]:
+        """Map score components to dashboard value/max rows (e.g. Delta fit 36/40)."""
+        return [
+            {"label": label, "value": round(components.get(key, 0.0), 1), "max": maximum, "kind": "base"}
+            for key, label, maximum in _BASE_SCORE_LABELS
+        ]
+
+    def _score(self, contracts: Sequence[OptionContractSnapshot], debit: float, expiry_label: str) -> float:
+        components = self._score_components(contracts, debit, expiry_label)
+        return round(sum(components.values()), 4)
 
     def _debit_in_range(self, debit: float) -> bool:
         return self.config.min_debit_per_trade <= debit <= self.config.max_debit_per_trade

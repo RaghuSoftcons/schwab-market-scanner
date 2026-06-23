@@ -167,6 +167,7 @@ class OptionContractSnapshot(BaseModel):
     mark: float | None = Field(default=None, ge=0)
     implied_volatility: float | None = Field(default=None, ge=0)
     delta: float | None = Field(default=None, ge=-1, le=1)
+    gamma: float | None = None  # for GEX wall computation
     theta: float | None = None
     open_interest: int | None = Field(default=None, ge=0)
     volume: int | None = Field(default=None, ge=0)
@@ -242,6 +243,7 @@ class OptionProposal(BaseModel):
     width: float | None = Field(default=None, gt=0)
     net_delta: float | None = None
     score: float = 0
+    score_breakdown: list[dict] = Field(default_factory=list)
     tos_order_line: str = ""
     exit_targets: list[OptionProposalExitTarget] = Field(default_factory=list)
     reasons: list[str] = Field(default_factory=list)

@@ -797,6 +797,7 @@ class SchwabMarketDataClient:
                                     entry.get("volatility", entry.get("impliedVolatility"))
                                 ),
                                 delta=_optional_delta(entry.get("delta")),
+                                gamma=_optional_float(entry.get("gamma")),
                                 theta=_optional_float(entry.get("theta")),
                                 open_interest=_optional_int(entry.get("openInterest")),
                                 volume=_optional_int(entry.get("totalVolume", entry.get("volume"))),

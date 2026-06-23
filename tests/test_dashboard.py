@@ -48,9 +48,11 @@ def test_dashboard_contains_reference_proposal_controls() -> None:
         "/pnl/sync",
         "Sync P&amp;L",
         "Open Positions",
-        "Close now",
-        "/positions",
-        "/close",
+        "setPositionsMode",
+        "pos-table",
+        "UNREALIZED",
+        "/positions?source=",
+        "/positions/close",
         "confirm_live_order",
         "Automation",
         "/automation/status",
@@ -63,10 +65,18 @@ def test_dashboard_contains_reference_proposal_controls() -> None:
         "Stop @",
         "tos_stop_order_line",
         "preview card",
+        "score-breakdown-box",  # rich proposal-card breakdown (value/max)
+        "renderScoreBreakdown",
+        "gex-walls",            # GEX target/stop wall boxes
+        "renderGexWalls",
+        "Close on Reversal",    # toggle in the expiry row
+        "setCloseOnReversal",
+        "platform-strip",       # header TOKEN/ORDERS/QUOTES/KILL line
     ]:
         assert text in response.text
 
-    assert "score-breakdown" not in response.text  # removed: cramped the candidate rows
+    # The cramped per-candidate-row score line was removed (replaced by the rich card breakdown).
+    assert "scoreBreakdownLine" not in response.text
 
     assert "Unlock" not in response.text
     assert "api-key-input" not in response.text

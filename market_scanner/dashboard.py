@@ -165,7 +165,30 @@ _DASHBOARD_TEMPLATE = """<!doctype html>
     th { color: var(--muted); font-size: 12px; text-transform: uppercase; background: #f8fafc; }
     tr.candidate-row { cursor: pointer; }
     tr.candidate-row.selected { background: #c6ecd6; box-shadow: inset 4px 0 0 var(--green, #1a8f4c); }
-    .pos-sort { display: flex; align-items: center; gap: 5px; margin-bottom: 8px; }
+    .platform-strip { font-size: 12px; color: var(--muted); margin: 6px 0 2px; letter-spacing: 0.2px; }
+    .platform-strip strong { font-weight: 700; }
+    .warn-text { color: #b45309; }
+    .pos-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    .pos-table th { text-align: left; color: var(--muted); font-weight: 600; font-size: 11px; padding: 5px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+    .pos-table th.num { text-align: right; }
+    .pos-table th.sortable { cursor: pointer; user-select: none; }
+    .pos-table th.sortable:hover { color: var(--ink); }
+    .pos-table td { padding: 6px 8px; border-bottom: 1px solid var(--line-soft); white-space: nowrap; }
+    .pos-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
+    .pos-table td.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
+    .pos-action { text-align: right; }
+    .danger.small { padding: 2px 8px; font-size: 11px; min-height: 0; }
+    .score-breakdown-box { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; margin: 8px 0; background: white; }
+    .score-breakdown-box .sb-head { font-size: 11px; color: var(--muted); font-weight: 600; margin-bottom: 4px; }
+    .sb-row { display: flex; justify-content: space-between; font-size: 12px; padding: 2px 0; }
+    .sb-row .sb-val { font-variant-numeric: tabular-nums; color: var(--ink); }
+    .sb-total { border-top: 1px solid var(--line-soft); margin-top: 3px; padding-top: 4px; font-weight: 600; }
+    .gex-walls { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 8px 0; }
+    .gex-box { border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; }
+    .gex-box .label { font-size: 10px; color: var(--muted); font-weight: 600; }
+    .gex-box .value { font-size: 15px; font-weight: 700; font-variant-numeric: tabular-nums; }
+    .gex-box.target { background: var(--green-bg); border-color: #bfe6cf; }
+    .gex-box.stop { background: #fdeceb; border-color: #f3c9c6; }
     .pnl-headline { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; margin-bottom: 9px; }
     .pnl-row, .pos-row, .auto-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 9px; border: 1px solid var(--line); border-radius: 8px; background: white; margin-bottom: 6px; font-size: 13px; flex-wrap: wrap; }
     .pnl-row .label, .pos-row .label { text-transform: none; }
@@ -348,6 +371,7 @@ _DASHBOARD_TEMPLATE = """<!doctype html>
             <h2>Operating State</h2>
             <div class="badges" id="state-badges"></div>
           </div>
+          <div class="platform-strip" id="platform-strip"></div>
           <div class="state-summary" id="state-summary" title="">Loading scanner state...</div>
         </section>
 
@@ -394,10 +418,14 @@ _DASHBOARD_TEMPLATE = """<!doctype html>
 
         <section class="panel">
           <div class="panel-head">
-            <h2>Open Positions <span class="muted tiny">dashboard-tracked · live sends this session · cleared on restart</span></h2>
+            <h2>Open Positions <span class="muted tiny" id="positions-note">dashboard-tracked · this session</span></h2>
             <div class="panel-actions">
+              <span class="segmented" id="positions-mode" role="group" aria-label="Positions source">
+                <button class="segment-button active" type="button" data-pos-mode="tracked" onclick="setPositionsMode('tracked')">Tracked</button>
+                <button class="segment-button" type="button" data-pos-mode="all" onclick="setPositionsMode('all')">All</button>
+              </span>
               <span class="muted" id="positions-status">--</span>
-              <button class="ghost" id="positions-refresh-button" onclick="loadPositions(true)">Refresh positions</button>
+              <button class="ghost" id="positions-refresh-button" onclick="loadPositions(true)">Refresh</button>
             </div>
           </div>
           <div class="panel-body" id="positions-body">
@@ -433,6 +461,7 @@ _DASHBOARD_TEMPLATE = """<!doctype html>
             </span>
             <span class="proposal-settings" aria-label="Moneyness settings">
               <label class="checkbox-setting"><input id="allow-itm-checkbox" type="checkbox" onchange="setAllowItm(this.checked)">ITM</label>
+              <label class="checkbox-setting" title="Auto-close an open position when the opposite signal fires (ships OFF)"><input id="close-reversal-checkbox" type="checkbox" onchange="setCloseOnReversal(this.checked)">Close on Reversal</label>
             </span>
             <span class="proposal-settings" aria-label="Max loss settings">
               <span class="setting-label">Max Loss</span>
@@ -505,6 +534,7 @@ let appState = {
     expiry: "AUTO",
     expiryChoices: ["AUTO", "0DTE", "1DTE", "2DTE", "3DTE", "THIS_FRIDAY", "NEXT_WEEK_FRIDAY"],
     allowItm: true,
+    closeOnReversal: false,
     maxLoss: 300,
     maxLossChoices: [200, 300, 400, 500],
     entryOffsetCents: 10,
@@ -597,6 +627,7 @@ function renderSetupControls() {
     return `<button class="segment-button ${choice === settings.expiry ? "active" : ""}" type="button" onclick="setExpiry('${esc(choice)}')">${esc(label)}</button>`;
   }).join("");
   byId("allow-itm-checkbox").checked = Boolean(settings.allowItm);
+  if (byId("close-reversal-checkbox")) byId("close-reversal-checkbox").checked = Boolean(settings.closeOnReversal);
   byId("max-loss-buttons").innerHTML = settings.maxLossChoices.map(choice => (
     `<button class="segment-button ${choice === settings.maxLoss ? "active" : ""}" type="button" onclick="setMaxLoss(${choice})">$${choice}</button>`
   )).join("");
@@ -632,6 +663,11 @@ function setMaxLoss(value) {
 }
 function setEntryOffset(value) {
   appState.settings.entryOffsetCents = Number(value);
+  saveDashboardSettings();
+  render();
+}
+function setCloseOnReversal(value) {
+  appState.settings.closeOnReversal = Boolean(value);
   saveDashboardSettings();
   render();
 }
@@ -736,19 +772,28 @@ function renderPnl() {
   body.innerHTML = headline + (rows || `<div class="muted">No per-account P&amp;L rows.</div>`);
 }
 
-// ---- Open Positions + Close-now (#9) ----------------------------------------
+// ---- Open Positions table (Unified-Platform style: ACCOUNT/SYMBOL/QTY/AVG/MARK/UNREALIZED) ----
+function setPositionsMode(mode) {
+  appState.positionsMode = mode;
+  document.querySelectorAll("[data-pos-mode]").forEach(b => b.classList.toggle("active", b.dataset.posMode === mode));
+  loadPositions(true);
+}
+
 async function loadPositions(manual) {
+  const mode = appState.positionsMode || "tracked";
   if (manual && byId("positions-refresh-button")) {
     byId("positions-refresh-button").disabled = true;
     byId("positions-refresh-button").textContent = "Refreshing...";
   }
   if (byId("positions-status")) byId("positions-status").textContent = "loading";
   try {
-    const result = await fetchJson("/positions");
+    const result = await fetchJson(`/positions?source=${encodeURIComponent(mode)}`);
     if (result.ok) {
       appState.positions = result.data.positions || [];
       appState.positionsNote = result.data.note || "";
-      if (byId("positions-status")) byId("positions-status").textContent = shortTime(result.data.generated_at);
+      appState.positionErrors = result.data.errors || [];
+      if (byId("positions-note")) byId("positions-note").textContent = mode === "all" ? "live from Schwab · all enabled accounts" : "dashboard-tracked · this session";
+      if (byId("positions-status")) byId("positions-status").textContent = `${appState.positions.length} · ${shortTime(result.data.generated_at)}`;
       renderPositions();
     } else if (byId("positions-status")) {
       byId("positions-status").textContent = "load failed";
@@ -756,28 +801,46 @@ async function loadPositions(manual) {
   } finally {
     if (manual && byId("positions-refresh-button")) {
       byId("positions-refresh-button").disabled = false;
-      byId("positions-refresh-button").textContent = "Refresh positions";
+      byId("positions-refresh-button").textContent = "Refresh";
     }
   }
 }
 
+const POSITION_COLUMNS = [
+  ["account_label", "ACCOUNT", "text"],
+  ["symbol", "SYMBOL", "text"],
+  ["qty", "QTY", "num"],
+  ["avg", "AVG", "num"],
+  ["mark", "MARK", "num"],
+  ["unrealized_pnl", "UNREALIZED", "num"],
+];
+
 function setPositionsSort(key) {
-  appState.positionsSort = key;
+  if (appState.positionsSort === key) {
+    appState.positionsSortDir = (appState.positionsSortDir === "asc") ? "desc" : "asc";
+  } else {
+    appState.positionsSort = key;
+    appState.positionsSortDir = (key === "unrealized_pnl" || key === "qty" || key === "avg" || key === "mark") ? "desc" : "asc";
+  }
   renderPositions();
 }
 
 function sortedPositions() {
   const positions = (appState.positions || []).slice();
-  const key = appState.positionsSort || "unrealized";
+  const key = appState.positionsSort || "unrealized_pnl";
+  const dir = appState.positionsSortDir || "desc";
+  const col = POSITION_COLUMNS.find(c => c[0] === key);
+  const numeric = col && col[2] === "num";
   positions.sort((a, b) => {
-    if (key === "symbol") return String(a.symbol).localeCompare(String(b.symbol));
-    if (key === "account") return String(a.account_label || a.account_id).localeCompare(String(b.account_label || b.account_id));
-    // unrealized: highest P&L first, nulls last
-    const av = a.unrealized_pnl, bv = b.unrealized_pnl;
-    if (av == null && bv == null) return 0;
-    if (av == null) return 1;
-    if (bv == null) return -1;
-    return bv - av;
+    let av = a[key], bv = b[key];
+    if (numeric) {
+      if (av == null && bv == null) return 0;
+      if (av == null) return 1;   // nulls last
+      if (bv == null) return -1;
+      return dir === "asc" ? av - bv : bv - av;
+    }
+    const cmp = String(av == null ? "" : av).localeCompare(String(bv == null ? "" : bv));
+    return dir === "asc" ? cmp : -cmp;
   });
   return positions;
 }
@@ -786,53 +849,55 @@ function renderPositions() {
   const body = byId("positions-body");
   if (!body) return;
   const positions = sortedPositions();
-  const note = appState.positionsNote ? `<div class="muted tiny" style="margin-top:6px;">${esc(appState.positionsNote)}</div>` : "";
-  const active = appState.positionsSort || "unrealized";
-  const sortControl = `<div class="pos-sort"><span class="muted tiny">Sort:</span>${
-    [["unrealized", "Unrealized"], ["account", "Account"], ["symbol", "Symbol"]].map(([k, lbl]) =>
-      `<button class="segment-button ${active === k ? "active" : ""}" type="button" onclick="setPositionsSort('${k}')">${lbl}</button>`
-    ).join("")
-  }</div>`;
+  const errs = (appState.positionErrors || []).map(e => `<div class="notice red" style="margin-top:6px;">${esc(e)}</div>`).join("");
   if (!positions.length) {
-    body.innerHTML = `${sortControl}<div class="empty">No dashboard-tracked positions this session.</div>${note}`;
+    const empty = (appState.positionsMode || "tracked") === "all" ? "No open option positions in the enabled accounts." : "No dashboard-tracked positions this session.";
+    body.innerHTML = `<div class="empty">${empty}</div>${errs}`;
     return;
   }
+  const sortKey = appState.positionsSort || "unrealized_pnl";
+  const arrow = (appState.positionsSortDir || "desc") === "asc" ? " ▲" : " ▼";
+  const head = POSITION_COLUMNS.map(([k, lbl, kind]) =>
+    `<th class="${kind === "num" ? "num" : ""} sortable" onclick="setPositionsSort('${k}')">${lbl}${sortKey === k ? arrow : ""}</th>`
+  ).join("") + "<th></th>";
   const rows = positions.map((pos) => {
-    const dir = String(pos.direction || "").toUpperCase();
     const sym = esc(pos.symbol).replace(/'/g, "\\'");
     const acct = esc(pos.account_id).replace(/'/g, "\\'");
-    const label = esc(pos.account_label || pos.account_id).replace(/'/g, "\\'");
-    const upnl = (pos.unrealized_pnl === null || pos.unrealized_pnl === undefined)
-      ? `<span class="muted">uPnL --</span>`
-      : `uPnL <span class="${pnlClass(pos.unrealized_pnl)}">${moneySigned(pos.unrealized_pnl)}</span>`;
-    const statusId = `pos-status-${esc(pos.symbol)}-${esc(pos.account_id)}`;
-    return `<div class="pos-row">
-      <span class="label"><strong>${esc(pos.symbol)}</strong> <span class="${dir === "SHORT" ? "bad-text" : "good-text"}">${esc(dir)}</span> <span class="muted">${esc(pos.account_label || pos.account_id)}</span></span>
-      <span class="muted tiny">${esc(pos.broker_symbol)} ×${pos.qty} · ${upnl}</span>
-      <button class="danger" onclick="closePosition('${sym}','${acct}','${label}','${statusId}')">Close now</button>
-      <div class="send-status" id="${statusId}"></div>
-    </div>`;
+    const isLong = Number(pos.qty) > 0;
+    const qtyStr = (Number(pos.qty) > 0 ? "+" : "") + Number(pos.qty);
+    const upnl = (pos.unrealized_pnl == null) ? "--" : `<span class="${pnlClass(pos.unrealized_pnl)}">${moneySigned(pos.unrealized_pnl)}</span>`;
+    const statusId = `pos-status-${esc(pos.account_id)}-${esc(pos.symbol)}`;
+    const action = pos.is_spread
+      ? `<span class="muted tiny">spread</span>`
+      : `<button class="danger small" onclick="closePosition('${sym}','${acct}',${Math.abs(Number(pos.qty)) || 1},${isLong},'${statusId}')">Close</button>`;
+    return `<tr>
+      <td>${esc(pos.account_label || pos.account_id)}</td>
+      <td class="mono">${esc(pos.symbol)}</td>
+      <td class="num">${qtyStr}</td>
+      <td class="num">${pos.avg == null ? "--" : Number(pos.avg).toFixed(2)}</td>
+      <td class="num">${pos.mark == null ? "--" : Number(pos.mark).toFixed(2)}</td>
+      <td class="num">${upnl}</td>
+      <td class="pos-action">${action}<div class="send-status tiny" id="${statusId}"></div></td>
+    </tr>`;
   }).join("");
-  body.innerHTML = sortControl + rows + note;
+  body.innerHTML = `<table class="pos-table"><thead><tr>${head}</tr></thead><tbody>${rows}</tbody></table>${errs}`;
 }
 
-async function closePosition(symbol, accountId, accountLabel, statusId) {
+async function closePosition(brokerSymbol, accountId, qty, isLong, statusId) {
   const status = statusId ? byId(statusId) : null;
-  const ok = window.confirm(`Close ${symbol} in ${accountLabel}? This cancels resting orders and sends a MARKET close order.`);
-  if (!ok) { if (status) status.textContent = "Close cancelled."; return; }
-  if (status) status.textContent = "Sending close order...";
-  const body = { selected_account_ids: [accountId], confirm_live_order: true };
-  const result = await fetchJson(`/positions/${encodeURIComponent(symbol)}/close`, authOptions("POST", body));
+  const ok = window.confirm(`Close ${qty} ${brokerSymbol} in ${accountId}? This cancels resting orders and sends a MARKET close order.`);
+  if (!ok) { if (status) status.textContent = "cancelled"; return; }
+  if (status) status.textContent = "sending...";
+  const body = { account_id: accountId, broker_symbol: brokerSymbol, qty: qty, is_long: isLong, confirm_live_order: true };
+  const result = await fetchJson("/positions/close", authOptions("POST", body));
   if (!result.ok) {
     if (status) status.textContent = result.data?.detail || result.data?.body || `HTTP ${result.status}`;
     return;
   }
   const data = result.data || {};
-  const accountText = (data.account_results || []).map(r =>
-    `${r.account_label || r.account_id}: ${r.status}${r.broker_order_id ? " " + r.broker_order_id : ""}${(r.reasons || []).length ? " (" + r.reasons.join(", ") + ")" : ""}`
-  ).join(" | ");
-  const notes = (data.notes || []).join(" ");
-  if (status) status.textContent = `${data.status || "done"}${accountText ? " | " + accountText : ""}${notes ? " | " + notes : ""}`;
+  const r = (data.account_results || [])[0] || {};
+  const reasons = (r.reasons || []).length ? " (" + r.reasons.join(", ") + ")" : "";
+  if (status) status.textContent = `${data.status || "done"}${r.broker_order_id ? " " + r.broker_order_id : ""}${reasons}`;
   loadPositions(false);
 }
 
@@ -1048,6 +1113,19 @@ function render() {
     hasSim ? badge("SIM PROPOSALS", "amber") : badge("CURRENT PROPOSALS", "green"),
     badge(appState.settings.allowItm ? "ITM ALLOWED" : "ATM/OTM ONLY", appState.settings.allowItm ? "green" : "gray"),
   ].join("");
+
+  const ps = byId("platform-strip");
+  if (ps) {
+    const tokenOk = Boolean(schwab.read_only_ready);
+    const ordersLive = Boolean(config.live_gate_open);
+    const kill = Boolean(appState.automation?.kill_switch?.engaged);
+    ps.innerHTML = [
+      `TOKEN <strong class="${tokenOk ? "good-text" : "bad-text"}">${tokenOk ? "valid" : "check"}</strong>`,
+      `ORDERS <strong class="${ordersLive ? "bad-text" : "good-text"}">${ordersLive ? "live" : "blocked"}</strong>`,
+      `QUOTES <strong class="${tokenOk ? "good-text" : "warn-text"}">${tokenOk ? "ready" : "waiting"}</strong>`,
+      `KILL <strong class="${kill ? "bad-text" : "muted"}">${kill ? "ON" : "off"}</strong>`,
+    ].join(' <span class="muted">·</span> ');
+  }
 
   const universe = scan?.universe || config.symbols || [];
   const stateSummary = [
@@ -1462,6 +1540,25 @@ function proposalExecutionBadge(proposal) {
   return liveGateOpen() ? badge("LIVE READY", "red") : badge("DRY RUN", "green");
 }
 
+function renderScoreBreakdown(proposal) {
+  const rows = Array.isArray(proposal.score_breakdown) ? proposal.score_breakdown.filter(r => r && r.kind === "base") : [];
+  if (!rows.length) return "";
+  const total = rows.reduce((sum, r) => sum + Number(r.value || 0), 0);
+  const items = rows.map(r => `<div class="sb-row"><span>${esc(r.label)}</span><span class="sb-val">${Number(r.value).toFixed(0)}/${r.max}</span></div>`).join("");
+  return `<div class="score-breakdown-box"><div class="sb-head">Score breakdown</div>${items}<div class="sb-row sb-total"><span>Total</span><span class="sb-val">${total.toFixed(0)}/100</span></div></div>`;
+}
+
+function renderGexWalls(proposal) {
+  const t = proposal.gex_target_underlying, s = proposal.gex_stop_underlying, sl = proposal.gex_stop_loss_dollars;
+  if (t == null && s == null) return "";
+  const stopVal = s == null ? "--" : Number(s).toFixed(2);
+  const cap = sl ? ` · ${moneySigned(-Math.abs(Number(sl)))}` : "";
+  return `<div class="gex-walls">
+    <div class="gex-box target"><div class="label">TARGET · CALL WALL</div><div class="value">${t == null ? "--" : Number(t).toFixed(2)}</div></div>
+    <div class="gex-box stop"><div class="label">STOP · PUT WALL (CAPPED)</div><div class="value">${stopVal}${cap}</div></div>
+  </div>`;
+}
+
 function proposalCard(rawProposal, index) {
   const proposal = adjustedProposalForQuantity(rawProposal);
   const sim = isSimProposal(proposal);
@@ -1484,6 +1581,8 @@ function proposalCard(rawProposal, index) {
       <div class="metric"><div class="label">Debit</div><div class="value">${money(proposal.debit)}</div></div>
       <div class="metric"><div class="label">Max Loss</div><div class="value">${money(proposal.max_loss)}</div></div>
     </div>
+    ${renderGexWalls(proposal)}
+    ${renderScoreBreakdown(proposal)}
     ${entryLimit ? `<div class="order-note"><span class="label">Entry Limit</span> ${esc(entryLimit)}</div>` : ""}
     <div class="legs">${legs}</div>
     <div class="reasons">${reasonBadges(proposal.reasons, sim ? "amber" : "green")}</div>

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, time, timedelta, timezone
@@ -8,6 +9,8 @@ from typing import Literal, Sequence
 from zoneinfo import ZoneInfo
 
 from nt_schwab_bridge.config import OptionPlannerConfig
+from nt_schwab_bridge.gex import gex_result_from_schwab_chain
+from nt_schwab_bridge.gex_exits import compute_wall_exits
 from nt_schwab_bridge.models import OptionContractSnapshot, OptionProposal, OptionProposalLeg, OptionRight, SignalPayload, SignalRecord
 from nt_schwab_bridge.planner import OptionProposalPlanner
 from nt_schwab_bridge.schwab_adapter import SchwabApiError, SchwabOptionChainProvider
@@ -295,7 +298,7 @@ class MarketScanner:
                 chain = list(provider(record))
                 underlying = provider.last_underlying_price or candidate.metrics.current_price
                 result = planner.plan(record, chain, scanned_at, underlying_price=underlying)
-                proposals = result.proposals
+                proposals = _apply_gex_walls(result.proposals, chain, underlying)
                 blocked = result.blocked_reasons
             except (SchwabApiError, RuntimeError) as exc:
                 blocked = [f"proposal_generation_error:{exc.__class__.__name__}:{str(exc)[:120]}"]
@@ -522,6 +525,65 @@ def _regime_score(metrics: TickerMetrics) -> tuple[float, Bias, list[str]]:
     if score <= -0.75:
         return round(score, 4), "bearish", reasons
     return round(score, 4), "mixed", reasons
+
+
+def _wall_exits_for(proposal: OptionProposal, gex_result, underlying_price: float):
+    """Capped gamma-wall target/stop for a single-leg proposal (call wall -> target, put wall ->
+    stop, loss hard-capped at max_loss). Returns a WallExits or None."""
+    try:
+        legs = proposal.legs or []
+        primary = next((leg for leg in legs if leg.action == "BUY"), legs[0] if legs else None)
+        if primary is None:
+            return None
+        entry_premium = proposal.send_limit_price
+        if not entry_premium and proposal.quantity:
+            entry_premium = proposal.debit / (proposal.quantity * 100.0)
+        return compute_wall_exits(
+            direction=proposal.direction,
+            right=primary.right,
+            underlying_price=float(underlying_price),
+            primary_delta=getattr(primary, "delta", None),
+            entry_premium_per_share=float(entry_premium or 0.0),
+            contracts=int(proposal.quantity or 0),
+            max_loss_dollars=float(proposal.max_loss or 0.0),
+            call_wall=gex_result.call_wall,
+            put_wall=gex_result.put_wall,
+        )
+    except Exception:
+        return None
+
+
+def _apply_gex_walls(proposals: list[OptionProposal], chain: list[OptionContractSnapshot], underlying) -> list[OptionProposal]:
+    """Stamp GEX call-wall target / put-wall stop (capped at max-loss) onto single-leg proposals,
+    gated by NT_GEX_WALL_EXITS. Falls back silently to the unstamped proposals when gamma is thin."""
+    if os.environ.get("NT_GEX_WALL_EXITS", "false").strip().lower() != "true":
+        return proposals
+    if not underlying or not proposals:
+        return proposals
+    try:
+        gex_result = gex_result_from_schwab_chain(chain, float(underlying))
+    except Exception:
+        gex_result = None
+    if gex_result is None:
+        return proposals
+    out: list[OptionProposal] = []
+    for proposal in proposals:
+        leg_underlying = proposal.underlying_price or underlying
+        wall_exits = _wall_exits_for(proposal, gex_result, float(leg_underlying)) if (proposal.structure == "single" and leg_underlying) else None
+        if wall_exits is not None:
+            out.append(
+                proposal.model_copy(
+                    update={
+                        "gex_target_underlying": wall_exits.target_underlying,
+                        "gex_stop_underlying": wall_exits.stop_underlying,
+                        "gex_stop_loss_dollars": wall_exits.est_stop_loss_dollars,
+                        "notes": list(proposal.notes) + list(wall_exits.notes),
+                    }
+                )
+            )
+        else:
+            out.append(proposal)
+    return out
 
 
 def _signal_record(symbol: str, direction: str, metrics: TickerMetrics, scanned_at: datetime) -> SignalRecord:
