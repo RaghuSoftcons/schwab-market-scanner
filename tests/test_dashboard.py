@@ -62,9 +62,11 @@ def test_dashboard_contains_reference_proposal_controls() -> None:
         "speechSynthesis",
         "Stop @",
         "tos_stop_order_line",
-        "score-breakdown",
+        "preview card",
     ]:
         assert text in response.text
+
+    assert "score-breakdown" not in response.text  # removed: cramped the candidate rows
 
     assert "Unlock" not in response.text
     assert "api-key-input" not in response.text

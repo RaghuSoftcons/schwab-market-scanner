@@ -165,7 +165,6 @@ _DASHBOARD_TEMPLATE = """<!doctype html>
     th { color: var(--muted); font-size: 12px; text-transform: uppercase; background: #f8fafc; }
     tr.candidate-row { cursor: pointer; }
     tr.candidate-row.selected { background: #c6ecd6; box-shadow: inset 4px 0 0 var(--green, #1a8f4c); }
-    .score-breakdown { margin-top: 3px; font-size: 11px; color: var(--muted); }
     .pnl-headline { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; margin-bottom: 9px; }
     .pnl-row, .pos-row, .auto-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 9px; border: 1px solid var(--line); border-radius: 8px; background: white; margin-bottom: 6px; font-size: 13px; flex-wrap: wrap; }
     .pnl-row .label, .pos-row .label { text-transform: none; }
@@ -394,7 +393,7 @@ _DASHBOARD_TEMPLATE = """<!doctype html>
 
         <section class="panel">
           <div class="panel-head">
-            <h2>Open Positions</h2>
+            <h2>Open Positions <span class="muted tiny">dashboard-tracked · live sends this session · cleared on restart</span></h2>
             <div class="panel-actions">
               <span class="muted" id="positions-status">--</span>
               <button class="ghost" id="positions-refresh-button" onclick="loadPositions(true)">Refresh positions</button>
@@ -450,6 +449,7 @@ _DASHBOARD_TEMPLATE = """<!doctype html>
             <button class="sound" onclick="soundReady()">Sound Ready</button>
             <button class="ghost" onclick="testSound()">Test Sound</button>
             <button class="ghost" onclick="showFirstProposal()">Show Proposal</button>
+            <button class="ghost" id="preview-card-btn" onclick="previewProposalCard()" title="Show a sample simulated proposal card (clears on refresh)">preview card</button>
             <button class="ghost" disabled>Mark Reviewed</button>
           </div>
         </div>
@@ -746,7 +746,7 @@ async function loadPositions(manual) {
     const result = await fetchJson("/positions");
     if (result.ok) {
       appState.positions = result.data.positions || [];
-      appState.positionErrors = result.data.errors || [];
+      appState.positionsNote = result.data.note || "";
       if (byId("positions-status")) byId("positions-status").textContent = shortTime(result.data.generated_at);
       renderPositions();
     } else if (byId("positions-status")) {
@@ -764,31 +764,34 @@ function renderPositions() {
   const body = byId("positions-body");
   if (!body) return;
   const positions = appState.positions || [];
-  const errs = (appState.positionErrors || []).map(e => `<div class="notice red" style="margin-top:6px;">${esc(e)}</div>`).join("");
+  const note = appState.positionsNote ? `<div class="muted tiny" style="margin-top:6px;">${esc(appState.positionsNote)}</div>` : "";
   if (!positions.length) {
-    body.innerHTML = `<div class="empty">No open positions.</div>${errs}`;
+    body.innerHTML = `<div class="empty">No dashboard-tracked positions this session.</div>${note}`;
     return;
   }
   const rows = positions.map((pos, index) => {
-    const sym = esc(pos.symbol).replace(/'/g, "\\'");
+    const dir = String(pos.direction || "").toUpperCase();
+    const legs = (pos.legs || []).map(l => `${esc(l.action)} ${esc(l.broker_symbol)} ×${l.qty}`).join(" / ");
+    const accts = pos.account_count || (pos.account_ids || []).length;
     return `<div class="pos-row" data-pos-index="${index}">
-      <span class="label"><strong>${esc(pos.account_label || pos.account_id)}</strong> | ${esc(pos.underlying || "")} <span class="muted">${esc(pos.symbol)}</span></span>
-      <span>Net ${Number(pos.net_qty)} | Avg ${plainMoney(pos.average_price)} | MV ${money(pos.market_value)} | uPnL <span class="${pnlClass(pos.unrealized_pnl)}">${moneySigned(pos.unrealized_pnl)}</span></span>
+      <span class="label"><strong>${esc(pos.symbol)}</strong> <span class="${dir === "SHORT" ? "bad-text" : "good-text"}">${esc(dir)}</span> <span class="muted">${esc(pos.source || "")}</span></span>
+      <span class="muted tiny">${esc(legs)} · ${accts} acct${accts === 1 ? "" : "s"}${(pos.account_ids || []).length ? " (" + esc((pos.account_ids || []).join(", ")) + ")" : ""}</span>
       <button class="danger" onclick="closePosition(${index})">Close now</button>
       <div class="send-status" data-pos-status="${index}"></div>
     </div>`;
   }).join("");
-  body.innerHTML = rows + errs;
+  body.innerHTML = rows + note;
 }
 
 async function closePosition(index) {
   const pos = (appState.positions || [])[index];
   if (!pos) return;
   const status = document.querySelector(`[data-pos-status="${index}"]`);
-  const ok = window.confirm(`Close ${pos.net_qty} ${pos.symbol} in ${pos.account_label}? This sends a MARKET order.`);
+  const accts = pos.account_count || (pos.account_ids || []).length;
+  const ok = window.confirm(`Close ${pos.symbol} across ${accts} account${accts === 1 ? "" : "s"}? This cancels resting orders and sends MARKET close orders.`);
   if (!ok) { if (status) status.textContent = "Close cancelled."; return; }
   if (status) status.textContent = "Sending close order...";
-  const body = { selected_account_ids: [pos.account_id], confirm_live_order: true };
+  const body = { confirm_live_order: true };  // close every tracked account for this symbol
   const result = await fetchJson(`/positions/${encodeURIComponent(pos.symbol)}/close`, authOptions("POST", body));
   if (!result.ok) {
     if (status) status.textContent = result.data?.detail || result.data?.body || `HTTP ${result.status}`;
@@ -1057,15 +1060,49 @@ function renderBuildButton() {
 
 // Score breakdown (#5): candidate JSON carries metrics.gap_pct, metrics.premarket_volume,
 // candidate.direction; regime bias lives on the scan. Render a small line under the score.
-function scoreBreakdownLine(candidate) {
-  const metrics = candidate.metrics || {};
-  const parts = [];
-  if (metrics.gap_pct !== null && metrics.gap_pct !== undefined) parts.push(`Gap ${pct(metrics.gap_pct)}`);
-  if (metrics.premarket_volume) parts.push(`Vol ${intFmt(metrics.premarket_volume)}`);
-  const regime = appState.scan?.regime?.bias;
-  if (regime) parts.push(`Regime ${esc(regime)}`);
-  if (candidate.direction && candidate.direction !== "none") parts.push(`Dir ${esc(candidate.direction)}`);
-  return parts.length ? `<div class="score-breakdown">${parts.join(" · ")}</div>` : "";
+// Preview card (#3): inject a sample SIMULATED proposal so the operator can see a fully-populated
+// proposal card (OCO target/stop, legs, TOS lines) without a live build. Marked sim -> not sendable.
+// Mirrors the Unified Platform's "preview card". Clears on Refresh/Build or via "exit preview".
+function _samplePreviewProposal() {
+  const now = new Date().toISOString();
+  return {
+    id: "sim_preview", signal_id: "PREVIEW", symbol: "QQQ", direction: "long", structure: "single",
+    status: "proposed", created_at: now, expiry: "2026-06-26", quantity: 1, underlying_price: 540.25,
+    legs: [{ action: "BUY", qty: 1, symbol: "QQQ", broker_symbol: "QQQ   260626C00540000",
+             expiry: "2026-06-26", strike: 540, right: "CALL", price: 4.20, bid: 4.10, ask: 4.20,
+             mark: 4.15, delta: 0.52, open_interest: 4210, volume: 18234 }],
+    debit: 420, max_loss: 420, natural_limit_price: 4.20, natural_debit: 420, send_limit_price: 4.30,
+    width: null, net_delta: 0.52, score: 82,
+    tos_order_line: "BUY +1 SINGLE QQQ 100 26 JUN 26 540 CALL @4.30 LMT",
+    exit_targets: [{ target_index: 0, qty: 1, target_percent: 40, entry_fill_price: 4.30,
+                     target_limit_price: 6.02, stop_loss_percent: 50, stop_trigger_price: 2.15,
+                     estimated_profit: 172,
+                     tos_exit_order_line: "SELL -1 SINGLE QQQ 100 26 JUN 26 540 CALL @6.02 LMT GTC",
+                     tos_stop_order_line: "SELL -1 SINGLE QQQ 100 26 JUN 26 540 CALL @2.15 STP GTC" }],
+    reasons: ["SIM_ONLY", "single_long_option", "atm_primary"],
+    notes: ["PREVIEW sample — not a live proposal", "OCO exit: target 40% / stop 50%"],
+    dry_run: true,
+  };
+}
+
+function previewProposalCard() {
+  const btn = byId("preview-card-btn");
+  if (appState._previewActive) {  // toggle off -> restore the real view
+    appState._previewActive = false;
+    if (btn) btn.textContent = "preview card";
+    render();
+    return;
+  }
+  appState._previewActive = true;
+  const sample = _samplePreviewProposal();
+  appState.currentProposals = [sample];
+  byId("proposal-subtitle").textContent = "PREVIEW — sample simulated proposal (QQQ)";
+  byId("proposal-status").textContent = "preview";
+  byId("proposal-notice").className = "notice";
+  byId("proposal-notice").textContent = "PREVIEW: sample simulated proposal (not live). Click 'exit preview' or Refresh to restore.";
+  try { byId("proposal-cards").innerHTML = proposalCard(sample, 0); } catch (e) { byId("proposal-cards").innerHTML = '<div class="empty">Preview render error.</div>'; }
+  setMetrics({ current_price: 540.25, gap_pct: 2.1, premarket_high: 541.0, previous_high: 538.5 });
+  if (btn) btn.textContent = "exit preview";
 }
 
 // Build a notice that names the SPECIFIC block reason(s), not just the generic catch-all.
@@ -1126,7 +1163,7 @@ function candidateRow(candidate) {
       ? `<span class="badge amber" title="${esc(blockedReasons.join(" | "))}">blocked: ${esc(blockedReasonSummary(blockedReasons))}</span>`
       : "";
   return `<tr class="candidate-row${selected}" onclick="selectCandidate('${selectedAttr}')">
-    <td><div class="sym">${esc(candidate.symbol)}</div><div class="tiny">rank ${candidate.rank || ""}</div>${scoreBreakdownLine(candidate)}</td>
+    <td><div class="sym">${esc(candidate.symbol)}</div><div class="tiny">rank ${candidate.rank || ""}</div></td>
     <td>${badge(candidate.action || "WATCH", tone)}</td>
     <td>${plainMoney(metrics.current_price)}</td>
     <td class="${Number(metrics.gap_pct || 0) >= 0 ? "good-text" : "bad-text"}">${pct(metrics.gap_pct)}</td>

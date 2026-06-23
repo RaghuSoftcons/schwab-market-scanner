@@ -2,109 +2,122 @@
 File: test_positions_close.py
 Created: 2026-06-22 15:20 EST
 Author: Claude (Anthropic) + Raghu
-Version: 1.0.0
-Last Modified: 2026-06-22 15:20 EST
+Version: 2.0.0
+Last Modified: 2026-06-22 16:55 EST
 
 Change Log:
-- 2026-06-22 15:20 EST | 1.0.0 | Open-positions aggregation (#9a), MARKET close payload (#9b),
-  and triple-lock/confirm gating for Close-now. Uses a stub Schwab client (no live calls).
+- 2026-06-22 15:20 EST | 1.0.0 | Authoritative Schwab-pull open positions + MARKET close.
+- 2026-06-22 16:55 EST | 2.0.0 | Switched to DASHBOARD-TRACKED positions (only live sends from
+  this dashboard this session are eligible for Close-now), per Raghu. Tests the in-memory tracker,
+  MARKET close-leg inversion, and triple-lock/confirm gating with a stub client (no live calls).
 """
 
 from __future__ import annotations
 
+from datetime import date, datetime, timezone
 from types import SimpleNamespace
 
+import market_scanner.app as app
 from market_scanner.app import (
-    _aggregate_positions,
-    _market_close_order_payload,
-    _normalize_position,
     _close_position_response,
+    _market_close_legs,
+    _register_active_position,
+    _tracked_positions_response,
 )
 from market_scanner.models import ClosePositionRequest
+from nt_schwab_bridge.models import OptionProposal, OptionProposalLeg
 
 
-def _account(account_id="66502618", account_hash="HASH", enabled=True):
-    return SimpleNamespace(id=account_id, account_hash=account_hash, enabled=enabled, label="Individual")
+def _proposal(symbol="SMCI", direction="long", action="BUY"):
+    leg = OptionProposalLeg(
+        action=action, qty=2, symbol=symbol, expiry=date(2026, 6, 26), strike=45, right="CALL", price=2.5
+    )
+    leg = leg.model_copy(update={"broker_symbol": "SMCI  260626C00045000"})
+    return OptionProposal(
+        id="p1", signal_id="s1", symbol=symbol, direction=direction, structure="single",
+        created_at=datetime.now(timezone.utc), expiry=date(2026, 6, 26), quantity=2,
+        legs=[leg], debit=500, max_loss=500,
+    )
 
 
-def _raw_long_call():
+def _accounts():
     return {
-        "instrument": {"symbol": "SMCI  260626C00045000", "assetType": "OPTION", "underlyingSymbol": "SMCI"},
-        "longQuantity": 2,
-        "shortQuantity": 0,
-        "averagePrice": 2.50,
-        "marketValue": 700.0,
-        "longOpenProfitLoss": 200.0,
+        "66502618": SimpleNamespace(id="66502618", account_hash="HASH1", enabled=True),
+        "47169783": SimpleNamespace(id="47169783", account_hash="HASH2", enabled=True),
     }
 
 
-def test_normalize_position_long_call() -> None:
-    view = _normalize_position(_raw_long_call(), _account())
-    assert view is not None
-    assert view.symbol == "SMCI  260626C00045000"
-    assert view.underlying == "SMCI"
-    assert view.net_qty == 2
-    assert view.unrealized_pnl == 200.0
-    assert view.account_label == "Individual"  # alias from ACCOUNT_ALIASES
+def _reset():
+    app.active_positions.clear()
 
 
-def test_market_close_payload_long_is_sell_to_close() -> None:
-    payload = _market_close_order_payload("SMCI  260626C00045000", 2, is_long=True)
-    assert payload["orderType"] == "MARKET"
-    assert payload["orderStrategyType"] == "SINGLE"
-    leg = payload["orderLegCollection"][0]
-    assert leg["instruction"] == "SELL_TO_CLOSE"
-    assert leg["quantity"] == 2
+def test_register_and_list_tracked_position() -> None:
+    _reset()
+    accts = _accounts()
+    _register_active_position(_proposal(), ["66502618", "47169783"], accts, {"66502618": "OID1", "47169783": "OID2"})
+    resp = _tracked_positions_response()
+    assert len(resp.positions) == 1
+    pos = resp.positions[0]
+    assert pos.symbol == "SMCI"
+    assert pos.account_count == 2
+    assert pos.legs[0].broker_symbol == "SMCI  260626C00045000"
+    assert "this session" in resp.note
+    _reset()
 
 
-def test_market_close_payload_short_is_buy_to_close() -> None:
-    payload = _market_close_order_payload("SMCI  260626P00045000", 1, is_long=False)
-    assert payload["orderLegCollection"][0]["instruction"] == "BUY_TO_CLOSE"
+def test_market_close_legs_inverts_action() -> None:
+    long_legs = [{"action": "BUY", "qty": 2, "broker_symbol": "SMCI  260626C00045000"}]
+    assert _market_close_legs(long_legs)[0]["instruction"] == "SELL_TO_CLOSE"
+    short_legs = [{"action": "SELL", "qty": 1, "broker_symbol": "SMCI  260626P00045000"}]
+    assert _market_close_legs(short_legs)[0]["instruction"] == "BUY_TO_CLOSE"
 
 
 class _StubClient:
-    def __init__(self, positions):
-        self._positions = positions
+    def __init__(self):
         self.placed = []
 
-    def get_positions(self, account_hash):
-        return self._positions
+    def place_order(self, account_hash, payload):
+        self.placed.append((account_hash, payload))
+        return {"broker_order_id": "NEW1"}
+
+    def cancel_order(self, account_hash, order_id):
+        pass
 
 
-def test_aggregate_positions_skips_flat() -> None:
-    flat = dict(_raw_long_call(), longQuantity=0, shortQuantity=0)
-    client = _StubClient([_raw_long_call(), flat])
-    views, errors = _aggregate_positions([_account()], client)
-    assert errors == []
-    assert len(views) == 1  # the flat one is dropped
-
-
-def test_close_is_blocked_without_live_gate() -> None:
-    # The triple-lock is closed in dry-run config, so close must NOT submit; it returns the payload.
-    client = _StubClient([_raw_long_call()])
-    resp = _close_position_response(
-        symbol="SMCI  260626C00045000",
-        accounts=[_account()],
-        request=ClosePositionRequest(selected_account_ids=["66502618"], confirm_live_order=True),
-        order_client=client,
-    )
-    assert resp.status in {"blocked", "dry_run"}
-    assert resp.account_results
-    result = resp.account_results[0]
-    assert result.status in {"blocked", "dry_run"}
-    assert result.order_payload is not None
-    assert result.order_payload["orderType"] == "MARKET"
-    # No live order was placed against the stub client.
-    assert client.placed == []
-
-
-def test_close_reports_no_position_for_unknown_symbol() -> None:
-    client = _StubClient([_raw_long_call()])
-    resp = _close_position_response(
-        symbol="NVDA",
-        accounts=[_account()],
-        request=ClosePositionRequest(confirm_live_order=False),
-        order_client=client,
-    )
+def test_close_unknown_symbol_is_blocked() -> None:
+    _reset()
+    resp = _close_position_response(symbol="NVDA", request=ClosePositionRequest(confirm_live_order=True), order_client=_StubClient())
     assert resp.status == "blocked"
-    assert any("No open position" in note for note in resp.notes)
+    assert any("No dashboard-tracked position" in n for n in resp.notes)
+
+
+def test_close_blocked_when_live_gate_closed() -> None:
+    # Dry-run config: triple-lock closed -> no MARKET order placed; payload returned for review.
+    _reset()
+    _register_active_position(_proposal(), ["66502618"], _accounts(), {"66502618": "OID1"})
+    client = _StubClient()
+    resp = _close_position_response(symbol="SMCI", request=ClosePositionRequest(confirm_live_order=True), order_client=client)
+    assert resp.status in {"blocked", "dry_run"}
+    assert client.placed == []  # nothing sent live
+    assert resp.account_results[0].order_payload["orderType"] == "MARKET"
+    # Position stays tracked since it was not actually closed.
+    assert "SMCI" in app.active_positions
+    _reset()
+
+
+def test_close_submits_and_clears_when_gate_open(monkeypatch) -> None:
+    # Force the live gate open to exercise the live close path against the stub (no real Schwab).
+    _reset()
+    _register_active_position(_proposal(), ["66502618", "47169783"], _accounts(), {"66502618": "OID1", "47169783": "OID2"})
+    monkeypatch.setattr(app.settings.service, "execution_mode", "live", raising=False)
+    monkeypatch.setattr(app.settings.service, "allow_live_orders", True, raising=False)
+    monkeypatch.setattr(app.settings.service, "trading_enabled", True, raising=False)
+    assert app.settings.service.live_gate_open is True
+    client = _StubClient()
+    resp = _close_position_response(symbol="SMCI", request=ClosePositionRequest(confirm_live_order=True), order_client=client)
+    assert resp.status == "submitted"
+    assert len(client.placed) == 2  # one MARKET close per tracked account
+    assert all(p["orderType"] == "MARKET" for _, p in client.placed)
+    # Fully closed -> removed from tracker.
+    assert "SMCI" not in app.active_positions
+    _reset()

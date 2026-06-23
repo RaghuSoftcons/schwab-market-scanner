@@ -38,7 +38,8 @@ from market_scanner.models import (
     ClosePositionResponse,
     ClosePositionResult,
     PositionsResponse,
-    PositionView,
+    TrackedPosition,
+    TrackedPositionLeg,
     ProposalExitTargetPreview,
     ProposalOrderFillAccountStatus,
     ProposalOrderStatusResponse,
@@ -67,6 +68,10 @@ _PNL_SYNC_LOOKBACK_DAYS = 14
 automation_config = AutomationConfig.from_env()
 automation_engine = AutomationEngine(automation_config)
 kill_switch: dict = {"engaged": False, "reason": ""}
+
+# Positions sent live from THIS dashboard this session (keyed by underlying symbol). Only these
+# show up for Close-now. Cleared on restart -- mirrors the Unified Platform's bridge-tracked model.
+active_positions: dict[str, dict] = {}
 
 ACCOUNT_ALIASES = {
     "51116118": "Raghu - SEP IRA",
@@ -300,86 +305,79 @@ async def automation_kill_mobile(key: str = Query(default="")) -> dict:
 
 
 # ---- Open positions + Close-now (#9 / the SMCI gap) --------------------------------------
-# AUTHORITATIVE: positions come straight from Schwab (get_positions), never an in-memory
-# tracker, because the scanner places trades directly across accounts.
+# DASHBOARD-TRACKED (per Raghu 2026-06-22): only positions THIS dashboard sent live this session
+# show up for Close-now -- mirrors the Unified Platform's "bridge-tracked, cleared on restart".
+# The authoritative Schwab pull listed every unrelated holding, which was noise. Tradeoff: a
+# position placed outside this dashboard, or before a restart, won't appear here.
 
-def _normalize_position(raw: dict, account) -> PositionView | None:
-    if not isinstance(raw, dict):
-        return None
-    instrument = raw.get("instrument") if isinstance(raw.get("instrument"), dict) else {}
-    broker_symbol = str(instrument.get("symbol", "") or "").strip()
-    if not broker_symbol:
-        return None
-    long_qty = _to_float(raw.get("longQuantity"))
-    short_qty = _to_float(raw.get("shortQuantity"))
-    open_pl = raw.get("longOpenProfitLoss")
-    if open_pl is None and raw.get("shortOpenProfitLoss") is None:
-        open_pl = raw.get("currentDayProfitLoss")
-    unrealized = _to_float_or_none(open_pl)
-    if unrealized is None:
-        unrealized = (_to_float(raw.get("longOpenProfitLoss")) + _to_float(raw.get("shortOpenProfitLoss"))) or None
-    return PositionView(
-        account_id=str(getattr(account, "id", "") or ""),
-        account_label=_account_alias(getattr(account, "id", "") or ""),
-        symbol=broker_symbol,
-        underlying=str(instrument.get("underlyingSymbol", "") or ""),
-        asset_type=str(instrument.get("assetType", "OPTION") or "OPTION"),
-        long_qty=long_qty,
-        short_qty=short_qty,
-        net_qty=round(long_qty - short_qty, 4),
-        average_price=_to_float_or_none(raw.get("averagePrice")),
-        market_value=_to_float_or_none(raw.get("marketValue")),
-        unrealized_pnl=unrealized,
-    )
-
-
-def _to_float(value) -> float:
-    result = _to_float_or_none(value)
-    return 0.0 if result is None else result
-
-
-def _to_float_or_none(value) -> float | None:
-    if value is None or value == "":
-        return None
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _aggregate_positions(accounts: list, client: SchwabMarketDataClient) -> tuple[list[PositionView], list[str]]:
-    positions: list[PositionView] = []
-    errors: list[str] = []
-    for account in accounts:
-        account_hash = str(getattr(account, "account_hash", "") or "").strip()
-        if not account_hash:
-            continue
-        try:
-            raw_positions = client.get_positions(account_hash)
-        except (SchwabApiError, SchwabOAuthError) as exc:
-            errors.append(f"{getattr(account, 'id', '?')}: {str(exc)[:200]}")
-            continue
-        for raw in raw_positions:
-            view = _normalize_position(raw, account)
-            if view is not None and view.net_qty != 0:
-                positions.append(view)
-    return positions, errors
-
-
-def _market_close_order_payload(broker_symbol: str, quantity: int, is_long: bool) -> dict:
-    return {
-        "session": "NORMAL",
-        "duration": "DAY",
-        "orderType": "MARKET",
-        "orderStrategyType": "SINGLE",
-        "orderLegCollection": [
-            {
-                "instruction": "SELL_TO_CLOSE" if is_long else "BUY_TO_CLOSE",
-                "quantity": quantity,
-                "instrument": {"symbol": broker_symbol, "assetType": "OPTION"},
-            }
-        ],
+def _register_active_position(proposal: OptionProposal, account_ids: list[str], accounts_by_id: dict, broker_order_ids: dict) -> None:
+    """Record a live-sent position so it can be shown + closed from the dashboard this session."""
+    if not account_ids:
+        return
+    legs = [
+        {
+            "action": leg.action,
+            "qty": leg.qty,
+            "broker_symbol": leg.broker_symbol or fallback_broker_option_symbol(leg),
+            "right": leg.right,
+            "strike": leg.strike,
+        }
+        for leg in proposal.legs
+    ]
+    active_positions[proposal.symbol.upper()] = {
+        "symbol": proposal.symbol.upper(),
+        "direction": proposal.direction,
+        "structure": proposal.structure,
+        "source": "scanner",
+        "legs": legs,
+        "account_ids": list(account_ids),
+        "account_hashes": {aid: getattr(accounts_by_id.get(aid), "account_hash", "") for aid in account_ids},
+        "broker_order_ids": dict(broker_order_ids),
+        "sent_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
     }
+
+
+def _market_close_legs(legs: list[dict]) -> list[dict]:
+    # Invert the opening action: long (BUY) -> SELL_TO_CLOSE, short (SELL) -> BUY_TO_CLOSE.
+    return [
+        {
+            "instruction": "SELL_TO_CLOSE" if leg.get("action") == "BUY" else "BUY_TO_CLOSE",
+            "quantity": leg.get("qty", 1),
+            "instrument": {"symbol": leg.get("broker_symbol", ""), "assetType": "OPTION"},
+        }
+        for leg in legs
+        if leg.get("broker_symbol")
+    ]
+
+
+def _tracked_positions_response() -> PositionsResponse:
+    rows = [
+        TrackedPosition(
+            symbol=p["symbol"],
+            direction=p.get("direction", ""),
+            structure=p.get("structure", "single"),
+            source=p.get("source", "scanner"),
+            legs=[
+                TrackedPositionLeg(
+                    action=leg.get("action", ""),
+                    qty=int(leg.get("qty", 0) or 0),
+                    broker_symbol=leg.get("broker_symbol", ""),
+                    right=str(leg.get("right", "") or ""),
+                    strike=float(leg.get("strike", 0) or 0),
+                )
+                for leg in p.get("legs", [])
+            ],
+            account_ids=[_account_alias(aid) for aid in p.get("account_ids", [])],
+            account_count=len(p.get("account_ids", [])),
+            sent_at=p.get("sent_at", ""),
+        )
+        for p in active_positions.values()
+    ]
+    return PositionsResponse(
+        generated_at=datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+        positions=rows,
+        note="Dashboard-tracked live sends this session; cleared on restart.",
+    )
 
 
 def _open_order_ids_for_symbol(account_id: str, broker_symbol: str) -> list[str]:
@@ -407,106 +405,101 @@ def _open_order_ids_for_symbol(account_id: str, broker_symbol: str) -> list[str]
 def _close_position_response(
     *,
     symbol: str,
-    accounts: list,
     request: ClosePositionRequest,
     order_client: SchwabMarketDataClient,
 ) -> ClosePositionResponse:
+    """Close a DASHBOARD-TRACKED position: cancel resting orders + MARKET close, per account."""
+    pos = active_positions.get(symbol.upper())
+    if pos is None:
+        return ClosePositionResponse(
+            status="blocked",
+            symbol=symbol,
+            notes=["No dashboard-tracked position for this symbol — only positions sent from this dashboard this session can be closed here."],
+        )
     live_gate_open = settings.service.live_gate_open
-    accounts_by_id = {a.id: a for a in accounts if getattr(a, "enabled", False)}
-    selected_ids = request.selected_account_ids or list(accounts_by_id.keys())
-    target = symbol.strip()
-    target_compact = target.replace(" ", "")
-
-    positions, position_errors = _aggregate_positions(
-        [accounts_by_id[i] for i in selected_ids if i in accounts_by_id], order_client
-    )
-    matches = [
-        p for p in positions
-        if p.symbol.replace(" ", "") == target_compact or p.underlying.upper() == target.upper()
-    ]
-
+    market_legs = _market_close_legs(pos["legs"])
+    market_payload = {
+        "session": "NORMAL",
+        "duration": "DAY",
+        "orderType": "MARKET",
+        "orderStrategyType": "SINGLE",
+        "orderLegCollection": market_legs,
+    }
+    broker_symbol = pos["legs"][0]["broker_symbol"] if pos.get("legs") else ""
+    selected = request.selected_account_ids or pos["account_ids"]
     results: list[ClosePositionResult] = []
-    for position in matches:
-        account = accounts_by_id.get(position.account_id)
-        account_hash = str(getattr(account, "account_hash", "") or "").strip()
-        is_long = position.net_qty > 0
-        qty = int(abs(position.net_qty))
+    for account_id in pos["account_ids"]:
+        if account_id not in selected:
+            continue
+        account_hash = str(pos["account_hashes"].get(account_id, "") or "").strip()
+        label = _account_alias(account_id)
         reasons: list[str] = []
-        if qty <= 0:
-            reasons.append("position_quantity_zero")
         if not account_hash:
             reasons.append("account_hash_missing")
         if not live_gate_open:
             reasons.append("live_orders_blocked")
         elif not request.confirm_live_order:
             reasons.append("live_order_confirmation_required")
-
-        payload = _market_close_order_payload(position.symbol, qty, is_long) if qty > 0 else None
-        hard_block = any(r in {"position_quantity_zero", "account_hash_missing"} for r in reasons)
+        hard_block = "account_hash_missing" in reasons or not market_legs
 
         if hard_block or not (live_gate_open and request.confirm_live_order):
             results.append(
                 ClosePositionResult(
-                    account_id=position.account_id,
-                    account_label=position.account_label,
+                    account_id=account_id,
+                    account_label=label,
                     status="dry_run" if (not hard_block and "live_orders_blocked" in reasons) else "blocked",
                     reasons=list(dict.fromkeys(reasons or ["close_payload_ready"])),
-                    order_payload=payload,
+                    order_payload=market_payload,
                 )
             )
             continue
 
-        # Live close: cancel any resting orders for this symbol first, then MARKET close.
         canceled: list[str] = []
-        for order_id in _open_order_ids_for_symbol(position.account_id, position.symbol):
+        for order_id in _open_order_ids_for_symbol(account_id, broker_symbol):
             try:
                 order_client.cancel_order(account_hash, order_id)
                 canceled.append(order_id)
             except (SchwabApiError, SchwabOAuthError):
-                pass  # best-effort; the MARKET close still reduces the position
+                pass  # best-effort; the MARKET close still flattens the position
         try:
-            placed = order_client.place_order(account_hash, payload)
-            result = ClosePositionResult(
-                account_id=position.account_id,
-                account_label=position.account_label,
-                status="submitted",
-                reasons=["market_close_submitted"],
-                broker_order_id=str(placed.get("broker_order_id") or "") or None,
-                canceled_order_ids=canceled,
-                order_payload=payload,
+            placed = order_client.place_order(account_hash, market_payload)
+            results.append(
+                ClosePositionResult(
+                    account_id=account_id,
+                    account_label=label,
+                    status="submitted",
+                    reasons=["market_close_submitted"],
+                    broker_order_id=str(placed.get("broker_order_id") or "") or None,
+                    canceled_order_ids=canceled,
+                    order_payload=market_payload,
+                )
             )
         except (SchwabApiError, SchwabOAuthError) as exc:
-            result = ClosePositionResult(
-                account_id=position.account_id,
-                account_label=position.account_label,
-                status="blocked",
-                reasons=[f"market_close_failed:{str(exc)[:200]}"],
-                canceled_order_ids=canceled,
-                order_payload=payload,
+            results.append(
+                ClosePositionResult(
+                    account_id=account_id,
+                    account_label=label,
+                    status="blocked",
+                    reasons=[f"market_close_failed:{str(exc)[:200]}"],
+                    canceled_order_ids=canceled,
+                    order_payload=market_payload,
+                )
             )
-        results.append(result)
 
-    notes: list[str] = []
-    if not matches:
-        notes.append(f"No open position found for {symbol} in the selected accounts.")
-    notes.extend(f"positions_read_error: {err}" for err in position_errors)
     status = _aggregate_status(results) if results else "blocked"
+    notes: list[str] = []
+    # Only drop from the tracker when every selected account closed AND we covered all accounts.
+    fully_closed = bool(results) and all(r.status == "submitted" for r in results) and set(selected) >= set(pos["account_ids"])
+    if fully_closed:
+        active_positions.pop(symbol.upper(), None)
+        notes.append("Position closed and removed from the tracker.")
     return ClosePositionResponse(status=status, symbol=symbol, account_results=results, notes=notes)
 
 
 @app.get("/positions", response_model=PositionsResponse)
 async def positions() -> PositionsResponse:
-    """Authoritative open-positions view aggregated across enabled Schwab accounts."""
-    accounts, _notes = discover_schwab_accounts(_bridge_config())
-    client = SchwabMarketDataClient(settings.schwab)
-    views, errors = await asyncio.to_thread(
-        _aggregate_positions, [a for a in accounts if getattr(a, "enabled", False)], client
-    )
-    return PositionsResponse(
-        generated_at=datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
-        positions=views,
-        errors=errors,
-    )
+    """Dashboard-tracked open positions (live sends this session; cleared on restart)."""
+    return _tracked_positions_response()
 
 
 @app.post("/positions/{symbol}/close", response_model=ClosePositionResponse)
@@ -515,11 +508,10 @@ async def close_position(
     request: ClosePositionRequest,
     _: None = Depends(_require_api_key),
 ) -> ClosePositionResponse:
-    """Close an open position now: cancel resting orders + MARKET close. Triple-lock + confirm gated."""
-    accounts, _notes = discover_schwab_accounts(_bridge_config())
+    """Close a dashboard-tracked position now: cancel resting orders + MARKET close. Triple-lock + confirm gated."""
     client = SchwabMarketDataClient(settings.schwab)
     response = await asyncio.to_thread(
-        lambda: _close_position_response(symbol=symbol, accounts=accounts, request=request, order_client=client)
+        lambda: _close_position_response(symbol=symbol, request=request, order_client=client)
     )
     storage.append_order_event(
         {
@@ -799,6 +791,10 @@ async def send_proposal(
             )
 
     status = _aggregate_status(results)
+    # Track live-submitted positions so they (and only they) appear for dashboard Close-now.
+    submitted = {r.account_id: r.broker_order_id for r in results if r.status == "submitted"}
+    if submitted:
+        _register_active_position(proposal_to_send, list(submitted.keys()), accounts_by_id, submitted)
     response = SendProposalResponse(
         status=status,
         proposal_id=proposal_id,

@@ -113,24 +113,31 @@ class ClosePositionRequest(BaseModel):
     confirm_live_order: bool = False
 
 
-class PositionView(BaseModel):
-    account_id: str
-    account_label: str
-    symbol: str  # broker option symbol, e.g. "SMCI  260626C00045000"
-    underlying: str = ""
-    asset_type: str = "OPTION"
-    long_qty: float = 0.0
-    short_qty: float = 0.0
-    net_qty: float = 0.0
-    average_price: float | None = None
-    market_value: float | None = None
-    unrealized_pnl: float | None = None
+class TrackedPositionLeg(BaseModel):
+    action: str = ""  # opening action: BUY or SELL
+    qty: int = 0
+    broker_symbol: str = ""  # e.g. "SMCI  260626C00045000"
+    right: str = ""
+    strike: float = 0.0
+
+
+class TrackedPosition(BaseModel):
+    # A position THIS dashboard sent live this session (cleared on restart). Only these are
+    # eligible for Close-now -- not every holding in the Schwab account.
+    symbol: str  # underlying, e.g. "SMCI"
+    direction: str = ""
+    structure: str = "single"
+    source: str = "scanner"
+    legs: list[TrackedPositionLeg] = Field(default_factory=list)
+    account_ids: list[str] = Field(default_factory=list)  # display aliases
+    account_count: int = 0
+    sent_at: str = ""
 
 
 class PositionsResponse(BaseModel):
     generated_at: str
-    positions: list[PositionView] = Field(default_factory=list)
-    errors: list[str] = Field(default_factory=list)
+    positions: list[TrackedPosition] = Field(default_factory=list)
+    note: str = ""
 
 
 class ClosePositionResult(BaseModel):
