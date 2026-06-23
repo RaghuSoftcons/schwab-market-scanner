@@ -6,11 +6,25 @@ import json
 # File: dashboard.py
 # Created: (pre-existing)
 # Author: Claude (Anthropic) + Raghu
-# Version: 1.1.0
-# Last Modified: 2026-06-22 14:56 EST
+# Version: 1.3.0
+# Last Modified: 2026-06-22 15:22 EST
 #
 # Change Log
 # -----------------------------------------------------------------------------
+# 2026-06-22 15:22 EST  v1.3.0  VISUAL REBUILD to match the Unified Trading
+#     Platform dashboard look (nt_schwab_bridge/dashboard.py): adopted the
+#     Platform's CSS palette/typography/panel+badge+segmented styling, two-column
+#     dashboard-layout, grouped "Platform" status panel (token/tier/win badges +
+#     TOKEN/ORDERS/QUOTES/KILL row, Tier segmented control + Release/Refresh,
+#     Enrich toggles [scoring + GEX exits only; order-flow N/A], P&L Today/Wk/Mo/
+#     All row + Sync), LIVE/ORDERS LIVE/PLANNER/SCHWAB READY KPI badge strip, and
+#     the rich proposal card with a confidence score circle alongside the existing
+#     value/max score breakdown and GEX wall boxes. Top Candidates restyled like
+#     the Platform's Recent Signals table (Scanner is gap-scan driven, so it maps
+#     to the signal slot). ALL request/data/order logic preserved byte-for-byte:
+#     every fetch URL, query param, JSON body and the SCANNER_API_KEY/authOptions
+#     injection are unchanged; only RENDER (HTML-building) functions + markup were
+#     restyled, plus DOM-only writes to populate the new Platform-panel elements.
 # 2026-06-22 14:56 EST  v1.1.0  Added embedded-dashboard panels that call the
 #     existing (tested) backend endpoints:
 #       - Realized P&L panel (#4): GET /pnl/summary headline + per-account rows,
@@ -50,293 +64,320 @@ _DASHBOARD_TEMPLATE = """<!doctype html>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Schwab Market Scanner</title>
   <style>
+    /* Visual language adopted from the Unified Trading Platform dashboard
+       (nt_schwab_bridge/dashboard.py) so the Scanner matches it look-for-look.
+       All request/data logic in the <script> block below is the Scanner's own. */
     :root {
       color-scheme: light;
-      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      --bg: #f3f6fa;
+      --bg: #f4f6f8;
       --panel: #ffffff;
-      --ink: #111827;
-      --muted: #657188;
-      --line: #dbe3ed;
-      --line-soft: #edf1f6;
+      --ink: #17202a;
+      --muted: #667085;
+      --line: #d7dde5;
+      --line-soft: #e6ebf1;
+      --teal: #0f766e;
       --blue: #2563eb;
-      --green: #0f7a3b;
-      --green-bg: #ecfdf3;
       --amber: #b45309;
-      --amber-bg: #fff7ed;
-      --red: #a51616;
-      --red-bg: #fff1f2;
+      --red: #991b1b;
+      --green: #166534;
+      --green-bg: #e8f5ee;
+      --amber-bg: #fff4df;
+      --red-bg: #feecec;
       --navy: #111827;
-      --slate-bg: #f8fafc;
+      --shadow: 0 1px 2px rgba(17, 24, 39, 0.08);
     }
     * { box-sizing: border-box; }
-    body { margin: 0; background: var(--bg); color: var(--ink); }
+    body {
+      margin: 0;
+      min-width: 320px;
+      background: var(--bg);
+      color: var(--ink);
+      font: 14px/1.45 "Segoe UI", Arial, sans-serif;
+    }
     button, input { font: inherit; }
     button {
       border: 1px solid var(--line);
       background: var(--panel);
-      border-radius: 7px;
-      padding: 9px 13px;
-      cursor: pointer;
-      box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
       color: var(--ink);
+      min-height: 30px;
+      padding: 5px 9px;
+      border-radius: 6px;
+      cursor: pointer;
+      box-shadow: var(--shadow);
     }
-    button.primary { background: var(--blue); border-color: var(--blue); color: white; font-weight: 800; }
-    button.good { background: var(--green-bg); border-color: #bbf7d0; color: var(--green); font-weight: 800; }
-    button.danger { background: var(--red-bg); border-color: #fecdd3; color: var(--red); font-weight: 800; }
-    button.ghost { background: #f8fafc; }
-    button.sound { background: var(--green-bg); border-color: #bbf7d0; color: var(--green); font-weight: 900; }
-    button:disabled { cursor: not-allowed; color: #94a3b8; background: #f8fafc; }
+    button.primary { background: var(--green-bg); border-color: #b7dfc5; color: var(--green); font-weight: 700; }
+    button.good { background: var(--green-bg); border-color: #b7dfc5; color: var(--green); font-weight: 700; }
+    button.danger { color: var(--red); font-weight: 700; }
+    button.ghost { background: var(--panel); }
+    button.sound { border-color: #b7dfc5; background: var(--green-bg); color: var(--green); font-weight: 700; }
+    button:disabled { color: var(--muted); cursor: not-allowed; opacity: 0.65; }
+    button:focus-visible, .segment-button:focus-visible, .candidate-row:focus-visible {
+      outline: 2px solid var(--blue); outline-offset: 2px;
+    }
     input {
       border: 1px solid var(--line);
       background: white;
-      border-radius: 7px;
-      padding: 9px 11px;
-      min-width: 230px;
+      border-radius: 6px;
+      padding: 6px 9px;
+      min-width: 200px;
+      color: var(--ink);
     }
-    .page { max-width: 1880px; margin: 0 auto; padding: 22px; }
-    .topbar { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin-bottom: 18px; }
-    .title h1 { margin: 0; font-size: 23px; line-height: 1.1; letter-spacing: 0; }
-    .title .sub { margin-top: 6px; color: var(--muted); font-size: 14px; }
-    .top-actions { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; justify-content: flex-end; }
-    .layout { display: grid; grid-template-columns: minmax(500px, 540px) minmax(0, 1fr); gap: 6px; align-items: start; }
+    .page { width: min(1440px, 100%); margin: 0 auto; padding: 8px; }
+    .topbar {
+      display: grid; grid-template-columns: 1fr auto; gap: 6px; align-items: center; margin-bottom: 6px;
+    }
+    .title h1 { margin: 0; font-size: 16px; font-weight: 700; letter-spacing: 0; }
+    .title .sub { margin-top: 1px; color: var(--muted); font-size: 11px; }
+    .top-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+    .layout {
+      display: grid;
+      grid-template-columns: minmax(500px, 0.92fr) minmax(460px, 1.08fr);
+      gap: 12px;
+      align-items: start;
+    }
+    .layout > div { display: grid; gap: 6px; min-width: 0; }
     .panel {
       background: var(--panel);
       border: 1px solid var(--line);
       border-radius: 8px;
-      box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
-    }
-    .panel + .panel { margin-top: 12px; }
-    .panel-head {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 12px;
-      padding: 14px 15px;
-      border-bottom: 1px solid var(--line-soft);
-    }
-    .panel-head h2 { margin: 0; font-size: 16px; }
-    .panel-title { font-size: 16px; font-weight: 900; }
-    .panel-body { padding: 14px 15px; }
-    .candidate-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
-    .candidate-actions button { padding: 7px 10px; font-size: 13px; }
-    .build-cell { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
-    .row-build { padding: 6px 8px; font-size: 12px; font-weight: 900; color: var(--blue); }
-    .build-cell .badge { min-height: 24px; padding: 3px 7px; font-size: 11px; }
-    .kpis { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 7px; margin-bottom: 10px; }
-    .kpi { min-height: 72px; padding: 10px 9px; background: white; border: 1px solid var(--line); border-radius: 8px; }
-    .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0; }
-    .kpi .value { margin-top: 7px; font-size: 16px; font-weight: 900; overflow-wrap: anywhere; }
-    .state-summary {
-      padding: 9px 15px 11px;
-      border-top: 1px solid var(--line-soft);
-      color: var(--muted);
-      font-size: 12px;
-      line-height: 1.35;
+      box-shadow: var(--shadow);
       overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
+    }
+    .panel-head {
+      display: flex; gap: 8px; align-items: center; justify-content: space-between;
+      padding: 10px 12px; border-bottom: 1px solid var(--line);
+    }
+    .panel-head h2 { margin: 0; font-size: 13px; font-weight: 700; white-space: nowrap; }
+    .panel-title { font-size: 13px; font-weight: 700; white-space: nowrap; }
+    .panel-body { padding: 12px; }
+    .candidate-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+    .candidate-actions button { padding: 4px 8px; font-size: 12px; min-height: 26px; }
+    .build-cell { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+    .row-build { padding: 3px 8px; font-size: 12px; font-weight: 700; color: var(--blue); min-height: 24px; }
+    .build-cell .badge { min-height: 22px; padding: 2px 7px; font-size: 11px; }
+    .label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0; }
+
+    /* --- LIVE/ORDERS/PLANNER/SCHWAB badge metrics row (Platform "metrics") --- */
+    .kpis {
+      display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; margin-bottom: 0;
+    }
+    .kpi {
+      border: 1px solid var(--line); border-radius: 8px; padding: 7px 8px; min-height: 54px; background: #fbfcfe;
+    }
+    .kpi .value { margin-top: 2px; font-size: 16px; font-weight: 700; overflow-wrap: anywhere; }
+
+    /* --- grouped Platform status panel --- */
+    .platform-strip { font-size: 12px; color: var(--muted); }
+    .platform-rows { padding: 7px 12px 9px; display: flex; flex-direction: column; gap: 5px; }
+    .platform-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; font-size: 12px; }
+    .platform-row .label { font-size: 10px; }
+    .platform-row b, .platform-row strong { font-weight: 700; }
+    .ps-mode { color: var(--muted); font-size: 11px; }
+    .flag-toggle { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; user-select: none; }
+    .flag-toggle input { width: 14px; height: 14px; accent-color: var(--green); }
+
+    .state-summary {
+      padding: 9px 12px 11px; border-top: 1px solid var(--line); color: var(--muted);
+      font-size: 12px; line-height: 1.3; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     }
     .badges { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
     .badge {
-      display: inline-flex;
-      align-items: center;
-      min-height: 28px;
-      border-radius: 999px;
-      padding: 5px 10px;
-      font-size: 13px;
-      font-weight: 900;
-      background: #eef2ff;
-      color: #1d4ed8;
-      border: 1px solid #dbeafe;
-      white-space: nowrap;
+      display: inline-flex; align-items: center; min-height: 24px; border-radius: 999px;
+      padding: 3px 8px; font-size: 11px; font-weight: 700;
+      border: 1px solid var(--line); background: #eef2f7; color: var(--ink); white-space: nowrap;
     }
-    .badge.green { background: var(--green-bg); color: var(--green); border-color: #bbf7d0; }
-    .badge.amber { background: var(--amber-bg); color: var(--amber); border-color: #fed7aa; }
-    .badge.red { background: var(--red-bg); color: var(--red); border-color: #fecdd3; }
-    .badge.gray { background: #f8fafc; color: #475569; border-color: var(--line); }
-    .notice { border-left: 4px solid var(--amber); background: #fff7ed; padding: 12px 14px; border-radius: 7px; color: #7c3f06; line-height: 1.45; }
-    .notice.green { border-left-color: var(--green); background: var(--green-bg); color: #14532d; }
+    .badge.green { background: var(--green-bg); color: var(--green); border-color: #b7dfc5; }
+    .badge.amber { background: var(--amber-bg); color: var(--amber); border-color: #f0d39a; }
+    .badge.red { background: var(--red-bg); color: var(--red); border-color: #f2bcbc; }
+    .badge.blue { background: #eaf1ff; color: var(--blue); border-color: #bfd2ff; }
+    .badge.gray { background: #eef2f7; color: var(--muted); border-color: var(--line); }
+    .notice {
+      border-left: 4px solid var(--amber); background: var(--amber-bg); padding: 6px 10px;
+      color: #6f4200; border-radius: 6px; overflow-wrap: anywhere; font-size: 12px; line-height: 1.4;
+    }
+    .notice.green { border-left-color: var(--green); background: #f0fbf5; color: #0b5c2f; }
     .notice.red { border-left-color: var(--red); background: var(--red-bg); color: var(--red); }
-    .table-wrap { overflow-x: auto; }
+
+    /* --- candidate / signals tables --- */
+    .table-wrap { overflow-x: auto; width: 100%; }
     table { width: 100%; border-collapse: collapse; table-layout: fixed; }
-    .table-wrap table { min-width: 620px; }
-    th, td { text-align: left; padding: 11px 10px; border-bottom: 1px solid var(--line-soft); vertical-align: top; font-size: 14px; }
-    th { color: var(--muted); font-size: 12px; text-transform: uppercase; background: #f8fafc; }
+    .table-wrap table { min-width: 100%; }
+    th, td {
+      text-align: left; padding: 8px 8px; border-bottom: 1px solid var(--line);
+      vertical-align: middle; font-size: 13px;
+    }
+    th { color: var(--muted); font-size: 12px; font-weight: 700; text-transform: uppercase; }
     tr.candidate-row { cursor: pointer; }
-    tr.candidate-row.selected { background: #c6ecd6; box-shadow: inset 4px 0 0 var(--green, #1a8f4c); }
-    .platform-strip { font-size: 12px; color: var(--muted); margin: 6px 0 2px; letter-spacing: 0.2px; }
-    .platform-strip strong { font-weight: 700; }
-    .warn-text { color: #b45309; }
-    .pos-table { width: 100%; border-collapse: collapse; font-size: 12px; }
-    .pos-table th { text-align: left; color: var(--muted); font-weight: 600; font-size: 11px; padding: 5px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+    tr.candidate-row:hover { background: #f0f7f6; }
+    tr.candidate-row.selected { background: #c6ecd6; box-shadow: inset 4px 0 0 var(--green); }
+
+    /* --- open positions table --- */
+    .pos-table { width: 100%; border-collapse: collapse; font-size: 12px; table-layout: auto; }
+    .pos-table th {
+      text-align: left; color: var(--muted); font-weight: 700; font-size: 11px; text-transform: uppercase;
+      padding: 6px 8px; border-bottom: 1px solid var(--line); white-space: nowrap;
+    }
     .pos-table th.num { text-align: right; }
     .pos-table th.sortable { cursor: pointer; user-select: none; }
     .pos-table th.sortable:hover { color: var(--ink); }
     .pos-table td { padding: 6px 8px; border-bottom: 1px solid var(--line-soft); white-space: nowrap; }
     .pos-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
-    .pos-table td.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
+    .pos-table td.mono { font-family: Consolas, "Courier New", monospace; font-size: 11px; }
     .pos-action { text-align: right; }
     .danger.small { padding: 2px 8px; font-size: 11px; min-height: 0; }
-    .score-breakdown-box { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; margin: 8px 0; background: white; }
-    .score-breakdown-box .sb-head { font-size: 11px; color: var(--muted); font-weight: 600; margin-bottom: 4px; }
-    .sb-row { display: flex; justify-content: space-between; font-size: 12px; padding: 2px 0; }
+
+    /* --- score breakdown box (rich card; value/max) --- */
+    .score-breakdown-box { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; margin: 8px 0; background: #ffffff; }
+    .score-breakdown-box .sb-head { font-size: 11px; color: var(--muted); font-weight: 700; text-transform: uppercase; margin-bottom: 4px; }
+    .sb-row { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; padding: 2px 0; color: var(--muted); }
     .sb-row .sb-val { font-variant-numeric: tabular-nums; color: var(--ink); }
-    .sb-total { border-top: 1px solid var(--line-soft); margin-top: 3px; padding-top: 4px; font-weight: 600; }
+    .sb-total { border-top: 1px solid #e5e7eb; margin-top: 3px; padding-top: 4px; font-weight: 700; color: #111827; }
+
+    /* --- GEX wall boxes --- */
     .gex-walls { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 8px 0; }
-    .gex-box { border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; }
-    .gex-box .label { font-size: 10px; color: var(--muted); font-weight: 600; }
+    .gex-box { border-radius: 8px; padding: 7px 10px; }
+    .gex-box .label { font-size: 10px; font-weight: 700; }
     .gex-box .value { font-size: 15px; font-weight: 700; font-variant-numeric: tabular-nums; }
-    .gex-box.target { background: var(--green-bg); border-color: #bfe6cf; }
-    .gex-box.stop { background: #fdeceb; border-color: #f3c9c6; }
-    .pnl-headline { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; margin-bottom: 9px; }
-    .pnl-row, .pos-row, .auto-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 9px; border: 1px solid var(--line); border-radius: 8px; background: white; margin-bottom: 6px; font-size: 13px; flex-wrap: wrap; }
-    .pnl-row .label, .pos-row .label { text-transform: none; }
+    .gex-box.target { background: var(--green-bg); border: 1px solid #b7dfc5; }
+    .gex-box.target .label, .gex-box.target .value { color: var(--green); }
+    .gex-box.stop { background: #fdeeee; border: 1px solid #f2bcbc; }
+    .gex-box.stop .label, .gex-box.stop .value { color: var(--red); }
+
+    /* --- P&L / automation rows --- */
+    .pnl-headline { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-bottom: 9px; }
+    .pnl-row, .pos-row, .auto-row {
+      display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 9px;
+      border: 1px solid var(--line); border-radius: 8px; background: #fbfcfe; margin-bottom: 6px; font-size: 13px; flex-wrap: wrap;
+    }
+    .pnl-row .label, .pos-row .label, .auto-row .label { text-transform: none; }
     .panel-actions { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
-    .sym { font-weight: 900; }
-    .tiny { font-size: 12px; color: var(--muted); }
+
+    .sym { font-weight: 700; }
+    .tiny { font-size: 11px; color: var(--muted); }
     .muted { color: var(--muted); }
     .good-text { color: var(--green); }
     .bad-text { color: var(--red); }
     .warn-text { color: var(--amber); }
-    .right-panel { position: sticky; top: 14px; }
-    .right-panel .panel-head { padding: 10px 12px; }
-    .right-panel .panel-body { padding: 10px 12px; }
-    .right-panel button { padding: 6px 9px; font-size: 13px; }
-    .proposal-toolbar { display: grid; grid-template-columns: minmax(160px, 0.7fr) minmax(430px, auto); gap: 8px; align-items: start; }
-    .proposal-title h2 { margin: 0 0 5px; font-size: 16px; }
-    .right-panel .proposal-title h2 { font-size: 15px; }
-    .proposal-controls { display: flex; gap: 5px; flex-wrap: wrap; justify-content: flex-end; align-items: center; }
-    .proposal-settings { display: inline-flex; gap: 5px; align-items: center; flex-wrap: nowrap; }
-    .setting-label { color: var(--muted); font-size: 11px; font-weight: 900; text-transform: uppercase; }
-    .segmented { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: white; }
+
+    /* --- right (proposal) panel --- */
+    .right-panel { min-width: 0; }
+    .right-panel .panel-head { align-items: flex-start; }
+    .right-panel button { padding: 4px 8px; font-size: 12px; min-height: 30px; }
+    .proposal-toolbar { display: flex; gap: 8px; align-items: flex-start; justify-content: space-between; }
+    .proposal-title h2 { margin: 0 0 3px; font-size: 13px; font-weight: 700; }
+    .proposal-controls { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; align-items: center; }
+
+    .proposal-settings-bar {
+      display: flex; flex-wrap: wrap; gap: 5px 10px; align-items: center;
+      padding: 5px 12px; border-top: 1px solid var(--line);
+    }
+    .proposal-settings { display: inline-flex; gap: 6px; align-items: center; flex: 0 0 auto; flex-wrap: nowrap; min-width: max-content; }
+    .setting-label { color: var(--muted); font-size: 12px; font-weight: 700; text-transform: uppercase; }
+    .segmented {
+      display: inline-grid; grid-auto-flow: column; grid-auto-columns: minmax(44px, auto);
+      border: 1px solid var(--line); border-radius: 6px; overflow: hidden; background: white;
+    }
     .segment-button {
-      border: 0;
-      border-right: 1px solid var(--line);
-      border-radius: 0;
-      box-shadow: none;
-      min-width: 46px;
-      padding: 6px 8px;
-      background: white;
-      font-weight: 800;
-      font-size: 13px;
+      background: var(--panel); border: 0; border-right: 1px solid var(--line); border-radius: 0;
+      box-shadow: none; color: var(--ink); cursor: pointer; min-height: 26px; padding: 3px 7px; font-weight: 600; font-size: 12px;
     }
     .segment-button:last-child { border-right: 0; }
-    .segment-button.active { background: var(--green-bg); color: var(--green); }
-    .checkbox-setting { display: inline-flex; align-items: center; gap: 5px; font-weight: 900; font-size: 13px; }
-    .checkbox-setting input { min-width: 0; width: 17px; height: 17px; accent-color: var(--green); }
-    .target-inputs { display: inline-flex; gap: 4px; }
-    .target-inputs input { min-width: 0; width: 46px; font-weight: 900; text-align: center; padding: 6px 7px; font-size: 13px; }
+    .segment-button.active { background: var(--green-bg); color: var(--green); font-weight: 700; }
+    .segment-button:disabled { color: var(--muted); cursor: not-allowed; opacity: 0.7; }
+    .checkbox-setting { display: inline-flex; align-items: center; gap: 4px; font-weight: 800; font-size: 12px; min-height: 32px; }
+    .checkbox-setting input { min-width: 0; width: 16px; height: 16px; accent-color: var(--green); }
+    .target-inputs { display: inline-flex; gap: 4px; align-items: center; }
+    .target-inputs input {
+      min-width: 0; width: 44px; height: 32px; font-weight: 800; text-align: center; padding: 4px;
+      font-size: 12px; border: 1px solid var(--line); border-radius: 6px;
+    }
     .moneyness-strip { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
-    .right-panel .moneyness-strip .badge { min-height: 22px; padding: 3px 7px; font-size: 11px; }
-    .candidate-summary, .freshness { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin: 9px 0; }
+    .moneyness-strip .badge { min-height: 22px; padding: 2px 7px; font-size: 11px; }
+
+    .candidate-summary, .freshness { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin: 8px 0; }
     .freshness { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-    .metric { border: 1px solid var(--line); border-radius: 8px; padding: 11px; background: #fbfdff; min-width: 0; }
-    .metric .value { margin-top: 7px; font-size: 18px; font-weight: 900; overflow-wrap: anywhere; }
-    .right-panel .metric { padding: 8px 9px; min-height: 58px; }
-    .right-panel .metric .label { font-size: 11px; }
-    .right-panel .metric .value { margin-top: 4px; font-size: 15px; }
-    .right-panel .notice { padding: 9px 11px; font-size: 13px; line-height: 1.35; }
+    .metric { border: 1px solid var(--line); border-radius: 8px; padding: 7px 8px; background: #fbfcfe; min-width: 0; min-height: 54px; }
+    .metric .value { margin-top: 2px; font-size: 16px; font-weight: 700; overflow-wrap: anywhere; }
+
+    /* --- rich proposal card --- */
     .proposal-card {
-      border: 1px solid #bbf7d0;
-      border-left: 4px solid var(--green);
-      border-radius: 8px;
-      background: var(--green-bg);
-      padding: 10px 12px;
-      margin-top: 9px;
+      border: 2px solid #15803d; border-left-width: 7px; border-radius: 8px;
+      padding: 8px 10px; margin-top: 9px; background: #f0fdf4; box-shadow: 0 1px 2px rgba(21, 128, 61, 0.12);
     }
-    .proposal-card.sim { border-color: #fed7aa; border-left-color: var(--amber); background: #fffaf0; }
-    .proposal-top { display: flex; align-items: start; justify-content: space-between; gap: 8px; }
-    .trade-labels { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-    .trade-number { display: inline-flex; align-items: center; min-height: 24px; border-radius: 6px; padding: 3px 8px; background: var(--green); color: white; font-size: 12px; font-weight: 900; }
+    .proposal-card.sim { border-color: #f0d39a; border-left-color: var(--amber); background: #fffaf0; }
+    .proposal-top { display: grid; grid-template-columns: 1fr auto; gap: 6px; align-items: start; }
+    .proposal-side { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
+    .trade-labels { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 5px; }
+    .trade-number {
+      display: inline-flex; align-items: center; min-height: 24px; border-radius: 6px;
+      padding: 2px 8px; background: #14532d; color: #fff; font-size: 12px; font-weight: 800;
+    }
     .proposal-card.sim .trade-number { background: var(--amber); }
-    .trade-moneyness { font-size: 13px; }
-    .trade-moneyness .badge { min-height: 24px; padding: 3px 8px; font-size: 12px; }
-    .proposal-name { margin-top: 6px; font-weight: 900; font-size: 15px; }
-    .proposal-meta { margin-top: 3px; color: var(--muted); font-size: 12px; }
-    .proposal-card .metric { padding: 8px; }
-    .proposal-card .metric .value { margin-top: 4px; font-size: 16px; }
-    .proposal-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin-top: 8px; }
-    .qty-control { display: flex; gap: 6px; align-items: center; margin-top: 8px; flex-wrap: wrap; }
-    .qty-control .segment-button { min-width: 34px; padding: 6px 8px; }
-    .order-note { margin-top: 8px; color: var(--muted); line-height: 1.35; font-size: 12px; }
-    .legs { margin-top: 7px; display: grid; gap: 4px; }
-    .leg {
-      background: #e8edf5;
-      color: var(--ink);
-      border-radius: 6px;
-      padding: 7px 9px;
-      overflow-x: auto;
-      white-space: pre;
-      font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
-      font-size: 12px;
+    .trade-moneyness .badge { min-height: 24px; padding: 2px 8px; font-size: 12px; font-weight: 800; }
+    .proposal-name { margin-top: 4px; font-weight: 700; overflow-wrap: anywhere; }
+    .proposal-meta { margin-top: 2px; color: var(--muted); font-size: 12px; }
+    /* score circle */
+    .score-badge {
+      width: 48px; height: 48px; border-radius: 50%;
+      display: flex; flex-direction: column; align-items: center; justify-content: center; color: #fff;
     }
-    .tos-head, .exit-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 9px; }
-    .tos-actions, .exit-actions { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+    .score-badge.high { background: #166534; }
+    .score-badge.mid { background: #854f0b; }
+    .score-badge.low { background: #6b7280; }
+    .score-num { font-size: 19px; font-weight: 700; line-height: 1; }
+    .score-cap { font-size: 9px; opacity: 0.85; }
+
+    .proposal-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin-top: 6px; }
+    .proposal-card .metric { padding: 4px 7px; min-height: 0; background: #ffffff; }
+    .proposal-card .metric .value { margin-top: 1px; font-size: 13px; }
+    .qty-control { display: inline-flex; gap: 6px; align-items: center; margin-top: 4px; flex-wrap: wrap; }
+    .qty-control .segment-button { min-width: 34px; padding: 3px 7px; }
+    .order-note { margin-top: 4px; color: var(--muted); line-height: 1.35; font-size: 12px; overflow-wrap: anywhere; }
+    .legs { margin-top: 4px; display: grid; gap: 3px; font-family: Consolas, "Courier New", monospace; font-size: 12px; }
+    .leg { background: #eef2f7; color: var(--ink); border-radius: 6px; padding: 5px 6px; overflow-wrap: anywhere; }
+    .tos-head, .exit-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 5px; }
+    .tos-actions, .exit-actions { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; justify-content: flex-end; }
     .order-line {
-      margin-top: 7px;
-      background: var(--navy);
-      color: white;
-      border-radius: 6px;
-      padding: 9px 10px;
-      overflow-x: auto;
-      white-space: pre;
-      font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
-      font-size: 12px;
+      margin-top: 5px; background: #111827; color: #f9fafb; border-radius: 6px; padding: 8px 10px;
+      overflow-x: auto; white-space: pre; font-family: Consolas, "Courier New", monospace; font-size: 13px; font-weight: 700;
     }
-    .proposal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
-    .reasons { display: flex; gap: 5px; flex-wrap: wrap; margin-top: 8px; }
-    .proposal-card .reasons .badge { min-height: 22px; padding: 3px 7px; font-size: 11px; }
-    .note-list { margin-top: 6px; color: var(--muted); font-size: 12px; line-height: 1.35; }
-    .exit-plan { border-top: 1px solid var(--line); margin-top: 10px; padding-top: 8px; }
+    .proposal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+    .reasons { display: flex; gap: 5px; flex-wrap: wrap; margin-top: 6px; }
+    .proposal-card .reasons .badge { min-height: 22px; padding: 2px 7px; font-size: 11px; }
+    .note-list { margin-top: 4px; color: #7c2d12; font-size: 12px; font-weight: 700; line-height: 1.35; }
+    .proposal-card.sim .note-list { color: #6f4200; }
+    .exit-plan { border-top: 1px solid var(--line); margin-top: 5px; padding-top: 5px; }
     .exit-targets { display: grid; gap: 6px; margin-top: 6px; }
-    .exit-target { font-weight: 900; font-size: 12px; }
+    .exit-target { font-weight: 700; font-size: 12px; color: var(--ink); overflow-wrap: anywhere; }
     .exit-order-line {
-      display: block;
-      margin-top: 5px;
-      background: #e5e7eb;
-      border-radius: 6px;
-      padding: 7px 9px;
-      overflow-x: auto;
-      white-space: pre;
-      font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
-      font-size: 12px;
-      font-weight: 500;
+      display: block; margin-top: 5px; background: #e5e7eb; color: #111827; border-radius: 6px; padding: 6px 8px;
+      overflow-x: auto; white-space: pre; font-family: Consolas, "Courier New", monospace; font-size: 12px; font-weight: 700;
     }
-    .accounts { border: 1px solid var(--line); border-radius: 8px; margin-top: 9px; background: rgba(255, 255, 255, 0.62); }
+    .accounts { border: 1px solid var(--line); border-radius: 8px; margin-top: 8px; background: #fbfcfe; }
     .accounts-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 9px; border-bottom: 1px solid var(--line-soft); }
     .account-list { display: grid; gap: 6px; padding: 8px; }
     .account-row {
-      display: grid;
-      grid-template-columns: auto 1fr auto;
-      gap: 8px;
-      align-items: center;
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      padding: 7px 9px;
-      background: white;
-      font-size: 12px;
+      display: grid; grid-template-columns: auto 1fr auto; gap: 8px; align-items: center;
+      border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; background: white; font-size: 12px;
     }
-    .account-row.balance-ok { background: var(--green-bg); border-color: #bbf7d0; }
-    .account-row.balance-low { background: var(--red-bg); border-color: #fecdd3; }
-    .account-row.disabled { background: var(--red-bg); border-color: #fecdd3; }
-    .account-row input { min-width: 0; width: 18px; height: 18px; accent-color: var(--blue); }
-    .send-status { margin-top: 8px; font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
-    .empty { padding: 14px; color: var(--muted); text-align: center; border: 1px dashed var(--line); border-radius: 8px; background: #fbfdff; font-size: 12px; line-height: 1.35; }
-    @media (max-width: 1180px) {
-      .layout { grid-template-columns: 1fr; }
-      .right-panel { position: static; }
+    .account-row.balance-ok { background: #eefaf2; border-color: #b7dfc5; }
+    .account-row.balance-low { background: #fff1f1; border-color: #f2bcbc; }
+    .account-row.disabled { opacity: 0.62; background: #fff1f1; border-color: #f2bcbc; }
+    .account-row input { min-width: 0; width: 16px; height: 16px; accent-color: var(--blue); }
+    .send-status { margin-top: 6px; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; min-height: 16px; }
+    .empty { color: var(--muted); min-height: 60px; display: grid; place-items: center; text-align: center; padding: 18px; border: 1px dashed var(--line); border-radius: 8px; background: #fbfcfe; font-size: 12px; line-height: 1.4; }
+
+    @media (max-width: 1100px) {
+      .layout, .topbar, .kpis, .candidate-summary, .freshness, .proposal-stats { grid-template-columns: 1fr; }
       .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-      .proposal-toolbar { grid-template-columns: 1fr; }
+      .proposal-toolbar { flex-direction: column; }
       .proposal-controls { justify-content: flex-start; }
+      .top-actions { justify-content: flex-start; }
     }
-    @media (max-width: 760px) {
-      .page { padding: 14px; }
-      .topbar { align-items: stretch; flex-direction: column; }
-      .top-actions, .proposal-controls { justify-content: stretch; }
-      .top-actions > *, .proposal-controls > * { flex: 1 1 auto; }
+    @media (max-width: 600px) {
+      .page { padding: 12px; }
+      .title h1 { font-size: 17px; }
       input { min-width: 0; width: 100%; }
-      .candidate-summary, .proposal-stats, .freshness { grid-template-columns: 1fr; }
       .kpis { grid-template-columns: 1fr; }
       .account-row { grid-template-columns: auto 1fr; }
       .account-row .badge { grid-column: 1 / -1; }
@@ -345,46 +386,89 @@ _DASHBOARD_TEMPLATE = """<!doctype html>
 </head>
 <body>
   <main class="page">
-    <section class="topbar">
-      <div class="title">
-        <h1>Schwab Market Scanner</h1>
-        <div class="sub" id="last-update">Loading...</div>
-      </div>
-      <div class="top-actions">
-        <button class="ghost" id="mute-button" title="Mute audio cues" onclick="toggleMute()">🔔 Mute</button>
-        <button class="primary" id="build-all-button" data-run-scan-button onclick="runScan(true)">Build All</button>
-      </div>
-    </section>
-
     <section class="layout">
-      <div>
-        <div class="kpis">
-          <div class="kpi"><div class="label">Service</div><div class="value" id="kpi-service">...</div></div>
-          <div class="kpi"><div class="label">Schwab Data</div><div class="value" id="kpi-schwab">...</div></div>
-          <div class="kpi"><div class="label">Mode</div><div class="value" id="kpi-mode">...</div></div>
-          <div class="kpi"><div class="label">Regime</div><div class="value" id="kpi-regime">...</div></div>
+      <div class="dashboard-main">
+        <header class="topbar">
+          <div class="title">
+            <h1>Schwab Market Scanner</h1>
+            <div class="sub" id="last-update">Loading...</div>
+          </div>
+          <div class="top-actions">
+            <button class="ghost" id="mute-button" title="Mute audio cues" onclick="toggleMute()">🔔 Mute</button>
+            <button class="primary" id="build-all-button" data-run-scan-button onclick="runScan(true)">Build All</button>
+          </div>
+        </header>
+
+        <div class="kpis" aria-label="Platform status">
+          <div class="kpi"><div class="label">Live</div><div class="value" id="kpi-service">...</div></div>
+          <div class="kpi"><div class="label">Orders Live</div><div class="value" id="kpi-mode">...</div></div>
+          <div class="kpi"><div class="label">Planner</div><div class="value" id="kpi-regime">...</div></div>
+          <div class="kpi"><div class="label">Schwab Ready</div><div class="value" id="kpi-schwab">...</div></div>
           <div class="kpi"><div class="label">Proposals</div><div class="value" id="kpi-proposals">...</div></div>
         </div>
 
+        <section class="panel" id="platform-panel">
+          <div class="panel-head">
+            <div class="panel-title">Platform</div>
+            <div class="badges">
+              <span class="badge" id="ps-token-badge">token --</span>
+              <span class="badge" id="ps-tier-badge">Tier --</span>
+              <span class="badge" id="ps-win-badge">win --</span>
+              <button class="danger" id="platform-kill-button" type="button" title="Kill all automation"
+                      onclick="killSwitch()"
+                      style="min-height:22px;padding:1px 9px;font-size:11px;background:#fee2e2;color:#991b1b;border-color:#fca5a5;font-weight:700;">KILL</button>
+            </div>
+          </div>
+          <div class="platform-rows">
+            <div class="platform-row platform-strip" id="platform-strip"></div>
+            <div class="platform-row">
+              <span class="label">Tier</span>
+              <span class="segmented" id="automation-tier-buttons" role="group" aria-label="Automation tier">
+                <button class="segment-button" type="button" onclick="setTier('off')">Off</button>
+                <button class="segment-button" type="button" onclick="setTier('1')">1</button>
+                <button class="segment-button" type="button" onclick="setTier('2')">2</button>
+                <button class="segment-button" type="button" onclick="setTier('3')">3</button>
+              </span>
+              <span class="ps-mode" id="ps-mode" title="Tier label">manual send</span>
+              <button class="ghost" type="button" onclick="releaseKill()" style="min-height:22px;padding:1px 9px;font-size:11px;">Release kill</button>
+              <button class="ghost" type="button" onclick="loadAutomation()" style="min-height:22px;padding:1px 9px;font-size:11px;">Refresh</button>
+            </div>
+            <div class="platform-row">
+              <span class="label">Enrich</span>
+              <label class="flag-toggle"><input type="checkbox" checked disabled><span>scoring</span></label>
+              <label class="flag-toggle"><input type="checkbox" checked disabled><span>GEX exits</span></label>
+              <span class="ps-mode" title="Order-flow enrichment is N/A for the Scanner (gap-scan driven, futures excluded)">order flow N/A</span>
+            </div>
+            <div class="platform-row">
+              <span class="label">P&amp;L</span>
+              <span>Today <b id="ps-pnl-today" class="good-text">$0</b></span>
+              <span>Wk <b id="ps-pnl-week" class="good-text">$0</b></span>
+              <span>Mo <b id="ps-pnl-month" class="good-text">$0</b></span>
+              <span>All <b id="ps-pnl-all" class="good-text">$0</b></span>
+              <span class="muted" id="pnl-status">--</span>
+              <button class="ghost" id="pnl-sync-button" type="button" onclick="syncPnl()" title="Pull recent Schwab transactions and record realized P&amp;L" style="min-height:20px;padding:1px 9px;font-size:11px;">Sync P&amp;L</button>
+            </div>
+          </div>
+        </section>
+
         <section class="panel">
           <div class="panel-head">
-            <h2>Operating State</h2>
+            <div class="panel-title">Operating State</div>
             <div class="badges" id="state-badges"></div>
           </div>
-          <div class="platform-strip" id="platform-strip"></div>
           <div class="state-summary" id="state-summary" title="">Loading scanner state...</div>
         </section>
 
         <section class="panel">
           <div class="panel-head">
-            <h2>Top Candidates</h2>
+            <div class="panel-title">Top Candidates <span class="tiny" style="font-weight:400;">gap-scan signals · this session</span></div>
             <div class="candidate-actions">
               <div class="muted" id="candidate-count">0 shown</div>
               <button class="ghost" id="refresh-prices-button" data-run-scan-button onclick="runScan(false)">Refresh Prices</button>
             </div>
           </div>
           <div class="table-wrap">
-            <table>
+            <table class="signals-table">
               <thead>
                 <tr>
                   <th style="width: 17%;">Symbol</th>
@@ -405,20 +489,7 @@ _DASHBOARD_TEMPLATE = """<!doctype html>
 
         <section class="panel">
           <div class="panel-head">
-            <h2>Realized P&amp;L</h2>
-            <div class="panel-actions">
-              <span class="muted" id="pnl-status">--</span>
-              <button class="ghost" id="pnl-sync-button" onclick="syncPnl()">Sync P&amp;L</button>
-            </div>
-          </div>
-          <div class="panel-body" id="pnl-body">
-            <div class="muted">Loading P&amp;L...</div>
-          </div>
-        </section>
-
-        <section class="panel">
-          <div class="panel-head">
-            <h2>Open Positions <span class="muted tiny" id="positions-note">dashboard-tracked · this session</span></h2>
+            <div class="panel-title">Open Positions <span class="muted tiny" id="positions-note">dashboard-tracked · this session</span></div>
             <div class="panel-actions">
               <span class="segmented" id="positions-mode" role="group" aria-label="Positions source">
                 <button class="segment-button active" type="button" data-pos-mode="tracked" onclick="setPositionsMode('tracked')">Tracked</button>
@@ -435,7 +506,20 @@ _DASHBOARD_TEMPLATE = """<!doctype html>
 
         <section class="panel">
           <div class="panel-head">
-            <h2>Automation</h2>
+            <div class="panel-title">Realized P&amp;L</div>
+            <div class="panel-actions">
+              <span class="muted" id="pnl-status-detail">--</span>
+              <button class="ghost" id="pnl-sync-button-2" onclick="syncPnl()">Sync P&amp;L</button>
+            </div>
+          </div>
+          <div class="panel-body" id="pnl-body">
+            <div class="muted">Loading P&amp;L...</div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <div class="panel-title">Automation</div>
             <div class="panel-actions">
               <span class="muted" id="automation-status-label">--</span>
               <button class="ghost" onclick="loadAutomation()">Refresh</button>
@@ -447,14 +531,23 @@ _DASHBOARD_TEMPLATE = """<!doctype html>
         </section>
       </div>
 
-      <section class="panel right-panel">
-        <div class="panel-head proposal-toolbar">
-          <div class="proposal-title">
-            <h2>Current Proposal</h2>
-            <div class="muted" id="proposal-subtitle">Select a candidate.</div>
+      <aside class="dashboard-aside">
+        <section class="panel right-panel">
+          <div class="panel-head proposal-toolbar">
+            <div class="proposal-title">
+              <div class="panel-title" style="display:block;">Current Proposal</div>
+              <div class="muted" id="proposal-subtitle">Select a candidate.</div>
+            </div>
+            <div class="proposal-controls">
+              <span class="muted" id="proposal-status">ready</span>
+              <button class="sound" onclick="soundReady()">Sound Ready</button>
+              <button class="ghost" onclick="testSound()">Test Sound</button>
+              <button class="ghost" onclick="showFirstProposal()">Show Proposal</button>
+              <button class="ghost" id="preview-card-btn" onclick="previewProposalCard()" title="Show a sample simulated proposal card (clears on refresh)">preview card</button>
+              <button class="ghost" disabled>Mark Reviewed</button>
+            </div>
           </div>
-          <div class="proposal-controls">
-            <span class="muted" id="proposal-status">ready</span>
+          <div class="proposal-settings-bar" aria-label="Current proposal settings">
             <span class="proposal-settings" aria-label="Expiry settings">
               <span class="setting-label">Expiry</span>
               <span class="segmented" id="expiry-buttons" role="group" aria-label="Proposal expiry"></span>
@@ -476,31 +569,26 @@ _DASHBOARD_TEMPLATE = """<!doctype html>
               <span class="target-inputs" id="target-inputs" role="group" aria-label="Proposal targets"></span>
               <button class="ghost" onclick="applyTargets()">Apply</button>
             </span>
-            <button class="sound" onclick="soundReady()">Sound Ready</button>
-            <button class="ghost" onclick="testSound()">Test Sound</button>
-            <button class="ghost" onclick="showFirstProposal()">Show Proposal</button>
-            <button class="ghost" id="preview-card-btn" onclick="previewProposalCard()" title="Show a sample simulated proposal card (clears on refresh)">preview card</button>
-            <button class="ghost" disabled>Mark Reviewed</button>
           </div>
-        </div>
-        <div class="panel-body">
-          <div class="moneyness-strip">
-            <span class="setting-label">Moneyness</span>
-            <span class="badge green">ITM</span>
-            <span class="badge">ATM</span>
-            <span class="badge gray">OTM</span>
+          <div class="panel-body">
+            <div class="moneyness-strip">
+              <span class="setting-label">Moneyness</span>
+              <span class="badge green">ITM</span>
+              <span class="badge">ATM</span>
+              <span class="badge gray">OTM</span>
+            </div>
+            <div id="proposal-notice" class="notice">Loading scanner state...</div>
+            <div class="freshness" id="quote-freshness"></div>
+            <div class="candidate-summary">
+              <div class="metric"><div class="label">Underlying</div><div class="value" id="metric-underlying">...</div></div>
+              <div class="metric"><div class="label">Gap</div><div class="value" id="metric-gap">...</div></div>
+              <div class="metric"><div class="label">PM High</div><div class="value" id="metric-pmh">...</div></div>
+              <div class="metric"><div class="label">Prev High</div><div class="value" id="metric-prev-high">...</div></div>
+            </div>
+            <div id="proposal-cards"></div>
           </div>
-          <div id="proposal-notice" class="notice">Loading scanner state...</div>
-          <div class="freshness" id="quote-freshness"></div>
-          <div class="candidate-summary">
-            <div class="metric"><div class="label">Underlying</div><div class="value" id="metric-underlying">...</div></div>
-            <div class="metric"><div class="label">Gap</div><div class="value" id="metric-gap">...</div></div>
-            <div class="metric"><div class="label">PM High</div><div class="value" id="metric-pmh">...</div></div>
-            <div class="metric"><div class="label">Prev High</div><div class="value" id="metric-prev-high">...</div></div>
-          </div>
-          <div id="proposal-cards"></div>
-        </div>
-      </section>
+        </section>
+      </aside>
     </section>
   </main>
 
@@ -738,6 +826,7 @@ async function syncPnl() {
     }
     appState.pnl = result.data.summary || appState.pnl;
     if (byId("pnl-status")) byId("pnl-status").textContent = `+${Number(result.data.new_closes || 0)} closes`;
+    if (byId("pnl-status-detail")) byId("pnl-status-detail").textContent = `+${Number(result.data.new_closes || 0)} closes`;
     renderPnl();
   } finally {
     if (button) { button.disabled = false; button.textContent = original || "Sync P&L"; }
@@ -770,6 +859,21 @@ function renderPnl() {
       <span>Today <span class="${pnlClass(acct.today)}">${moneySigned(acct.today)}</span> | Week <span class="${pnlClass(acct.week)}">${moneySigned(acct.week)}</span> | All <span class="${pnlClass(acct.all_time)}">${moneySigned(acct.all_time)}</span> | ${Number(acct.wins || 0)}W-${Number(acct.losses || 0)}L (${pct(acct.win_rate)})</span>
     </div>`).join("");
   body.innerHTML = headline + (rows || `<div class="muted">No per-account P&amp;L rows.</div>`);
+
+  // Mirror the headline P&L into the grouped Platform panel strip (Today/Wk/Mo/All).
+  const setPnlStrip = (id, value) => {
+    const el = byId(id);
+    if (!el) return;
+    el.textContent = moneySigned(value);
+    el.className = pnlClass(value);
+  };
+  setPnlStrip("ps-pnl-today", pnl.today);
+  setPnlStrip("ps-pnl-week", pnl.week);
+  setPnlStrip("ps-pnl-month", pnl.month != null ? pnl.month : pnl.week);
+  setPnlStrip("ps-pnl-all", pnl.all_time);
+  if (byId("ps-win-badge")) {
+    byId("ps-win-badge").textContent = (pnl.win_rate == null || Number.isNaN(Number(pnl.win_rate))) ? "win --" : `win ${Number(pnl.win_rate).toFixed(0)}%`;
+  }
 }
 
 // ---- Open Positions table (Unified-Platform style: ACCOUNT/SYMBOL/QTY/AVG/MARK/UNREALIZED) ----
@@ -940,6 +1044,19 @@ function renderAutomation() {
   if (!data) { body.innerHTML = `<div class="muted">No automation status.</div>`; return; }
   if (byId("automation-status-label")) byId("automation-status-label").textContent = data.tier_label || data.tier || "--";
   const kill = data.kill_switch || {};
+
+  // Sync the grouped Platform panel's tier badge / mode label / tier buttons (DOM-only).
+  if (byId("ps-tier-badge")) byId("ps-tier-badge").textContent = data.tier_label || (data.tier != null ? `Tier ${data.tier}` : "Tier --");
+  if (byId("ps-mode")) byId("ps-mode").textContent = kill.engaged ? "kill engaged" : (String(data.tier) === "off" ? "manual send" : (data.tier_label || "auto"));
+  const platformTierWrap = byId("automation-tier-buttons");
+  if (platformTierWrap) {
+    Array.from(platformTierWrap.querySelectorAll(".segment-button")).forEach(btn => {
+      const label = btn.textContent.trim().toLowerCase();
+      const val = label === "off" ? "off" : label;
+      btn.classList.toggle("active", String(data.tier) === val);
+    });
+  }
+
   const tierBtns = [["off", "Off"], ["1", "Tier 1"], ["2", "Tier 2"], ["3", "Tier 3"]].map(([value, label]) =>
     `<button class="segment-button ${String(data.tier) === value ? "active" : ""}" type="button" onclick="setTier('${value}')">${label}</button>`
   ).join("");
@@ -1099,13 +1216,30 @@ function render() {
   const scan = appState.scan;
   const proposals = allProposals(scan);
 
-  byId("kpi-service").textContent = health.status || "...";
+  // KPI badge row mirrors the Platform's LIVE / ORDERS LIVE / PLANNER / SCHWAB READY strip.
+  byId("kpi-service").textContent = (health.status || "...").toUpperCase();
+  byId("kpi-mode").textContent = config.live_gate_open ? "LIVE" : "BLOCKED";
+  byId("kpi-regime").textContent = scan?.regime?.bias ? `PLANNER · ${scan.regime.bias}` : "PLANNER";
   byId("kpi-schwab").textContent = schwab.read_only_ready ? "READY" : (schwab.status || "...");
-  byId("kpi-mode").textContent = config.execution_mode || "...";
-  byId("kpi-regime").textContent = scan?.regime?.bias || "...";
   byId("kpi-proposals").textContent = String(proposals.length);
 
   const hasSim = proposals.some(isSimProposal);
+
+  // Grouped Platform panel badges (token / tier / win-rate) — DOM-only, derived from
+  // the same state the strip uses; no new requests.
+  const tokenOk = Boolean(schwab.read_only_ready);
+  if (byId("ps-token-badge")) {
+    byId("ps-token-badge").textContent = tokenOk ? "token valid" : "token check";
+    byId("ps-token-badge").className = "badge " + (tokenOk ? "green" : "amber");
+  }
+  if (byId("ps-tier-badge")) {
+    const tierLbl = appState.automation?.tier_label || (appState.automation?.tier != null ? `Tier ${appState.automation.tier}` : "Tier --");
+    byId("ps-tier-badge").textContent = tierLbl;
+  }
+  if (byId("ps-win-badge")) {
+    const wr = appState.pnl?.pnl?.win_rate;
+    byId("ps-win-badge").textContent = (wr == null || Number.isNaN(Number(wr))) ? "win --" : `win ${Number(wr).toFixed(0)}%`;
+  }
   byId("state-badges").innerHTML = [
     badge((config.execution_mode || "dry_run").toUpperCase(), config.execution_mode === "live" ? "red" : "gray"),
     badge(config.live_gate_open ? "LIVE GATE ON" : "LIVE GATE OFF", config.live_gate_open ? "red" : "green"),
@@ -1559,6 +1693,14 @@ function renderGexWalls(proposal) {
   </div>`;
 }
 
+// Platform-style confidence score circle (high/mid/low). Visual only.
+function renderScoreCircle(proposal) {
+  const s = Number(proposal.score);
+  if (!Number.isFinite(s) || s <= 0) return "";
+  const cls = s >= 80 ? "high" : (s >= 60 ? "mid" : "low");
+  return `<div class="score-badge ${cls}" title="Confidence score"><div class="score-num">${Math.round(s)}</div><div class="score-cap">score</div></div>`;
+}
+
 function proposalCard(rawProposal, index) {
   const proposal = adjustedProposalForQuantity(rawProposal);
   const sim = isSimProposal(proposal);
@@ -1574,7 +1716,10 @@ function proposalCard(rawProposal, index) {
         <div class="proposal-meta">${esc(proposalMetaText(proposal))}${active ? " | selected" : ""}</div>
         ${renderQuantityControl(proposal)}
       </div>
-      ${proposalExecutionBadge(proposal)}
+      <div class="proposal-side">
+        ${renderScoreCircle(proposal)}
+        ${proposalExecutionBadge(proposal)}
+      </div>
     </div>
     <div class="proposal-stats">
       <div class="metric"><div class="label">Underlying</div><div class="value">${plainMoney(proposal.underlying_price)}</div></div>
