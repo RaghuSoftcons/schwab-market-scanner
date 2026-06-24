@@ -524,7 +524,7 @@ def _tracked_positions_response(client: SchwabMarketDataClient | None = None) ->
         generated_at=datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
         mode="tracked",
         positions=rows,
-        note="Dashboard-tracked live sends this session; cleared on restart.",
+        note="Dashboard-tracked live sends; saved to disk and restored across restarts.",
     )
 
 

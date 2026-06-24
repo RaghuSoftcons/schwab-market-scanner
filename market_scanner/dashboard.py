@@ -489,7 +489,7 @@ _DASHBOARD_TEMPLATE = """<!doctype html>
 
         <section class="panel">
           <div class="panel-head">
-            <div class="panel-title">Open Positions <span class="muted tiny" id="positions-note">dashboard-tracked · this session</span></div>
+            <div class="panel-title">Open Positions <span class="muted tiny" id="positions-note">dashboard-tracked · saved across restarts</span></div>
             <div class="panel-actions">
               <span class="segmented" id="positions-mode" role="group" aria-label="Positions source">
                 <button class="segment-button active" type="button" data-pos-mode="tracked" onclick="setPositionsMode('tracked')">Tracked</button>
@@ -896,7 +896,7 @@ async function loadPositions(manual) {
       appState.positions = result.data.positions || [];
       appState.positionsNote = result.data.note || "";
       appState.positionErrors = result.data.errors || [];
-      if (byId("positions-note")) byId("positions-note").textContent = mode === "all" ? "live from Schwab · all enabled accounts" : "dashboard-tracked · this session";
+      if (byId("positions-note")) byId("positions-note").textContent = mode === "all" ? "live from Schwab · all enabled accounts" : "dashboard-tracked · saved across restarts";
       if (byId("positions-status")) byId("positions-status").textContent = `${appState.positions.length} · ${shortTime(result.data.generated_at)}`;
       renderPositions();
     } else if (byId("positions-status")) {
