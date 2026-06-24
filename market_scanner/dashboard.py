@@ -1950,7 +1950,7 @@ function renderAccountRouting(proposal, index) {
     </label>`;
   }).join("");
   return `<div class="accounts">
-    <div class="accounts-head"><div class="label">Accounts to Send</div><button onclick="loadAccounts()">Refresh Accounts</button></div>
+    <div class="accounts-head"><div class="label">Accounts to Send</div><button onclick="loadAccounts({force:true})">Refresh Accounts</button></div>
     <div class="account-list">${rows}</div>
   </div>`;
 }
