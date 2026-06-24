@@ -69,9 +69,34 @@ automation_config = AutomationConfig.from_env()
 automation_engine = AutomationEngine(automation_config)
 kill_switch: dict = {"engaged": False, "reason": ""}
 
-# Positions sent live from THIS dashboard this session (keyed by underlying symbol). Only these
-# show up for Close-now. Cleared on restart -- mirrors the Unified Platform's bridge-tracked model.
-active_positions: dict[str, dict] = {}
+# Positions sent live from THIS dashboard (keyed by underlying symbol); the ones shown for
+# Close-now. Persisted to disk so they survive restarts/redeploys (needs a persistent volume at
+# the storage path; otherwise it only survives in-process).
+_ACTIVE_POSITIONS_PATH = settings.storage.path / "active_positions.json"
+
+
+def _save_active_positions() -> None:
+    try:
+        _ACTIVE_POSITIONS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        tmp = _ACTIVE_POSITIONS_PATH.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(active_positions, indent=2), encoding="utf-8")
+        os.replace(tmp, _ACTIVE_POSITIONS_PATH)  # atomic; readers never see a partial file
+    except OSError:
+        pass  # best-effort; never let persistence break a send/close
+
+
+def _load_active_positions() -> dict[str, dict]:
+    try:
+        if _ACTIVE_POSITIONS_PATH.exists():
+            data = json.loads(_ACTIVE_POSITIONS_PATH.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return data
+    except (OSError, json.JSONDecodeError):
+        pass
+    return {}
+
+
+active_positions: dict[str, dict] = _load_active_positions()
 
 ACCOUNT_ALIASES = {
     "51116118": "Raghu - SEP IRA",
@@ -359,6 +384,7 @@ def _register_active_position(proposal: OptionProposal, account_ids: list[str], 
         "broker_order_ids": dict(broker_order_ids),
         "sent_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
     }
+    _save_active_positions()
 
 
 def _pos_float(value) -> float:
@@ -505,6 +531,7 @@ def _tracked_positions_response(client: SchwabMarketDataClient | None = None) ->
 def _drop_tracked_contract(account_id: str, broker_symbol: str) -> None:
     """After a contract closes, drop that account from any tracked position holding it."""
     target = broker_symbol.replace(" ", "")
+    changed = False
     for sym, p in list(active_positions.items()):
         leg_syms = {str(leg.get("broker_symbol", "")).replace(" ", "") for leg in p.get("legs", [])}
         if target in leg_syms and account_id in p.get("account_ids", []):
@@ -512,6 +539,9 @@ def _drop_tracked_contract(account_id: str, broker_symbol: str) -> None:
             p["account_hashes"] = {k: v for k, v in p.get("account_hashes", {}).items() if k in p["account_ids"]}
             if not p["account_ids"]:
                 active_positions.pop(sym, None)
+            changed = True
+    if changed:
+        _save_active_positions()
 
 
 def _open_order_ids_for_symbol(account_id: str, broker_symbol: str) -> list[str]:
