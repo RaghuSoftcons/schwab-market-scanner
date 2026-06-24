@@ -1206,6 +1206,10 @@ function renderProtectedResult(result) {
   }
   appState.scan = result.data;
   render();
+  // Whenever a build produces proposals, auto-refresh account balances so Accounts-to-Send is
+  // current without an extra "Refresh Accounts" click. (Refresh Prices builds no proposals -> skip.)
+  const hasProposals = (result.data?.candidates || []).some(c => (c.proposals || []).length);
+  if (hasProposals) loadAccounts({ force: true });
 }
 
 function render() {
@@ -1987,9 +1991,15 @@ async function loadAccounts(options = {}) {
   appState.accountNotes = result.data.notes || [];
   appState.accountsLoadedForKey = key;
   appState.accountsLoading = false;
-  appState.selectedAccountIds = new Set(
-    appState.accounts.filter(account => account.default_selected && account.enabled).map(account => account.id)
-  );
+  // Preserve the operator's current selection across refreshes; only fall back to defaults on
+  // the first load (empty selection). Drop any selected id that no longer exists/enabled.
+  const enabledIds = new Set(appState.accounts.filter(a => a.enabled).map(a => a.id));
+  const existing = (appState.selectedAccountIds && appState.selectedAccountIds.size)
+    ? new Set([...appState.selectedAccountIds].filter(id => enabledIds.has(id)))
+    : null;
+  appState.selectedAccountIds = (existing && existing.size)
+    ? existing
+    : new Set(appState.accounts.filter(account => account.default_selected && account.enabled).map(account => account.id));
   render();
 }
 
