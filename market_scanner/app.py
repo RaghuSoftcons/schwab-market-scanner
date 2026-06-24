@@ -669,6 +669,34 @@ async def close_position(
     return response
 
 
+@app.get("/debug/order-events")
+async def debug_order_events(limit: int = 50) -> dict:
+    """TEMP diagnostic: recent order-audit events (no order payloads/secrets) to see why exit
+    targets did/didn't submit. Remove after diagnosis."""
+    events = storage.list_order_events()
+    sliced = events[-max(1, min(limit, 300)):]
+    out = []
+    for e in sliced:
+        out.append({
+            "event_type": e.get("event_type"),
+            "proposal_id": e.get("proposal_id"),
+            "symbol": e.get("symbol") or (e.get("proposal") or {}).get("symbol"),
+            "target_index": e.get("target_index"),
+            "status": e.get("status"),
+            "recorded_at": e.get("recorded_at"),
+            "account_results": [
+                {
+                    "account_id": r.get("account_id"),
+                    "status": r.get("status"),
+                    "reasons": r.get("reasons"),
+                    "broker_order_id": r.get("broker_order_id"),
+                }
+                for r in (e.get("account_results") or []) if isinstance(r, dict)
+            ],
+        })
+    return {"total_events": len(events), "shown": len(out), "events": out}
+
+
 @app.get("/accounts")
 async def accounts(_: None = Depends(_require_api_key)) -> dict:
     discovered, notes = discover_schwab_accounts(_bridge_config())
