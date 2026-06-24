@@ -10,6 +10,7 @@ from market_scanner.app import (
     _proposal_from_order_payload,
     _send_exit_target_response,
     _schwab_exit_order_payload,
+    _schwab_otoco_entry_payloads,
 )
 from market_scanner.models import (
     ProposalOrderFillAccountStatus,
@@ -62,6 +63,74 @@ def test_filled_order_creates_fill_based_exit_preview() -> None:
     assert targets[0].target_limit_price == 3.12
     assert targets[0].estimated_profit == 62
     assert targets[0].tos_exit_order_line.startswith("SELL -1 SINGLE PLTR 100 12 JUN 26 120 CALL @3.12 LMT GTC")
+
+
+def _single_leg_proposal(quantity: int = 10) -> OptionProposal:
+    return OptionProposal(
+        id="otoco_p",
+        signal_id="scan_1",
+        symbol="TLT",
+        direction="long",
+        structure="single",
+        created_at=datetime(2026, 6, 22, tzinfo=timezone.utc),
+        expiry=date(2026, 6, 26),
+        quantity=quantity,
+        underlying_price=90,
+        legs=[
+            OptionProposalLeg(
+                action="BUY",
+                qty=quantity,
+                symbol="TLT",
+                expiry=date(2026, 6, 26),
+                strike=90,
+                right="CALL",
+                price=1.0,
+            )
+        ],
+        debit=quantity * 100,
+        max_loss=quantity * 100,
+        natural_limit_price=1.0,
+        send_limit_price=1.0,
+    )
+
+
+def test_otoco_entry_payloads_split_and_bracket() -> None:
+    payloads = _schwab_otoco_entry_payloads(_single_leg_proposal(10), 10, 1.0, [20, 50, 60], 50.0)
+
+    assert payloads is not None
+    # Front-weighted 10-lot -> 5/3/2 bracketed slices.
+    assert [p["quantity"] for p in payloads] == [5, 3, 2]
+    first = payloads[0]
+    assert first["orderStrategyType"] == "TRIGGER"
+    assert first["orderType"] == "LIMIT"
+    assert first["price"] == "1.00"
+    assert first["orderLegCollection"][0]["instruction"] == "BUY_TO_OPEN"
+    # Child is an OCO of [target LIMIT, stop STOP], each SELL_TO_CLOSE for the slice qty.
+    oco = first["childOrderStrategies"][0]
+    assert oco["orderStrategyType"] == "OCO"
+    target, stop = oco["childOrderStrategies"]
+    assert target["orderType"] == "LIMIT" and target["price"] == "1.20"
+    assert stop["orderType"] == "STOP" and stop["stopPrice"] == "0.50"
+    assert target["orderLegCollection"][0]["instruction"] == "SELL_TO_CLOSE"
+    assert target["quantity"] == 5 and stop["quantity"] == 5
+    # Later slices carry the further targets (+50% / +60%).
+    assert payloads[1]["childOrderStrategies"][0]["childOrderStrategies"][0]["price"] == "1.50"
+    assert payloads[2]["childOrderStrategies"][0]["childOrderStrategies"][0]["price"] == "1.60"
+
+
+def test_otoco_without_stop_degrades_to_oto() -> None:
+    payloads = _schwab_otoco_entry_payloads(_single_leg_proposal(10), 10, 1.0, [20, 50, 60], 0.0)
+
+    assert payloads is not None
+    child = payloads[0]["childOrderStrategies"][0]
+    # No stop -> trigger fires a single target LIMIT (OTO), not an OCO.
+    assert child["orderStrategyType"] == "SINGLE"
+    assert child["orderType"] == "LIMIT"
+
+
+def test_otoco_skips_verticals() -> None:
+    proposal = _single_leg_proposal(4).model_copy(update={"structure": "debit_vertical"})
+    assert _schwab_otoco_entry_payloads(proposal, 4, 1.0, [20, 50, 60], 50.0) is None
 
 
 def test_order_payload_restores_proposal_for_older_audit_events() -> None:

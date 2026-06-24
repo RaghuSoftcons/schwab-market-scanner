@@ -555,6 +555,7 @@ _DASHBOARD_TEMPLATE = """<!doctype html>
             <span class="proposal-settings" aria-label="Moneyness settings">
               <label class="checkbox-setting"><input id="allow-itm-checkbox" type="checkbox" onchange="setAllowItm(this.checked)">ITM</label>
               <label class="checkbox-setting" title="Auto-close an open position when the opposite signal fires (ships OFF)"><input id="close-reversal-checkbox" type="checkbox" onchange="setCloseOnReversal(this.checked)">Close on Reversal</label>
+              <label class="checkbox-setting" title="OTOCO (1st Triggers OCO): place the entry as bracketed slices (e.g. 5/3/2) so the target+stop are attached at Schwab and activate on fill. Single-leg only."><input id="otoco-checkbox" type="checkbox" onchange="setOtoco(this.checked)">OTOCO Bracket</label>
             </span>
             <span class="proposal-settings" aria-label="Max loss settings">
               <span class="setting-label">Max Loss</span>
@@ -623,6 +624,7 @@ let appState = {
     expiryChoices: ["AUTO", "0DTE", "1DTE", "2DTE", "3DTE", "THIS_FRIDAY", "NEXT_WEEK_FRIDAY"],
     allowItm: true,
     closeOnReversal: false,
+    otoco: false,
     maxLoss: 300,
     maxLossChoices: [200, 300, 400, 500],
     entryOffsetCents: 10,
@@ -716,6 +718,7 @@ function renderSetupControls() {
   }).join("");
   byId("allow-itm-checkbox").checked = Boolean(settings.allowItm);
   if (byId("close-reversal-checkbox")) byId("close-reversal-checkbox").checked = Boolean(settings.closeOnReversal);
+  if (byId("otoco-checkbox")) byId("otoco-checkbox").checked = Boolean(settings.otoco);
   byId("max-loss-buttons").innerHTML = settings.maxLossChoices.map(choice => (
     `<button class="segment-button ${choice === settings.maxLoss ? "active" : ""}" type="button" onclick="setMaxLoss(${choice})">$${choice}</button>`
   )).join("");
@@ -756,6 +759,11 @@ function setEntryOffset(value) {
 }
 function setCloseOnReversal(value) {
   appState.settings.closeOnReversal = Boolean(value);
+  saveDashboardSettings();
+  render();
+}
+function setOtoco(value) {
+  appState.settings.otoco = Boolean(value);
   saveDashboardSettings();
   render();
 }
@@ -2026,9 +2034,12 @@ async function sendProposal(index) {
     if (status) status.textContent = "Select at least one Schwab account before sending.";
     return;
   }
+  // OTOCO only applies to single-leg entries; the backend falls back to a plain entry otherwise.
+  const otoco = Boolean(appState.settings.otoco) && proposal.structure === "single";
   let confirmLiveOrder = false;
   if (liveGateOpen()) {
-    confirmLiveOrder = window.confirm(`Submit LIVE Schwab order?\\n\\n${proposal.tos_order_line}\\nAccounts: ${selectedIds.join(", ")}\\nMax loss: ${money(proposal.max_loss)}\\n\\nOnly continue if this is exactly the trade you want.`);
+    const otocoLine = otoco ? "\\nOTOCO: entry placed as bracketed slices — target + stop attach at Schwab and activate on fill." : "";
+    confirmLiveOrder = window.confirm(`Submit LIVE Schwab order?\\n\\n${proposal.tos_order_line}\\nAccounts: ${selectedIds.join(", ")}\\nMax loss: ${money(proposal.max_loss)}${otocoLine}\\n\\nOnly continue if this is exactly the trade you want.`);
     if (!confirmLiveOrder) {
       if (status) status.textContent = "Live order cancelled before submission.";
       return;
@@ -2040,10 +2051,12 @@ async function sendProposal(index) {
     confirm_live_order: confirmLiveOrder,
     quantity: proposal.quantity,
     limit_price: proposal.send_limit_price,
+    otoco: otoco,
     order_note: `Schwab Market Scanner | ${proposal.symbol} ${proposal.direction || ""} | ${proposalMoneyness(proposal)}`
   };
   const opts = authOptions("POST", body);
-  const result = await fetchJson(`/proposals/${encodeURIComponent(proposal.id)}/send`, opts);
+  const targets = encodeURIComponent((appState.settings.targets || [20, 50, 60]).join(","));
+  const result = await fetchJson(`/proposals/${encodeURIComponent(proposal.id)}/send?target_percentages=${targets}`, opts);
   if (!result.ok) {
     if (status) status.textContent = result.data?.detail || result.data?.body || `HTTP ${result.status}`;
     return;

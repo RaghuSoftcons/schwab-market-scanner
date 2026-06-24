@@ -100,6 +100,10 @@ class SendProposalRequest(BaseModel):
     quantity: int | None = Field(default=None, ge=1, le=10)
     limit_price: float | None = Field(default=None, gt=0)
     order_note: str = Field(default="", max_length=500)
+    # OTOCO ("1st Triggers OCO"): when true, single-leg entries are placed as N bracketed slices
+    # (one TRIGGER entry per target slice, each triggering an OCO of [target LIMIT, stop STOP]),
+    # so exits are attached at the broker on fill. Ignored for verticals. Default off.
+    otoco: bool = False
 
 
 class SendExitTargetRequest(BaseModel):

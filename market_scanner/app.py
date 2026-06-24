@@ -669,34 +669,6 @@ async def close_position(
     return response
 
 
-@app.get("/debug/order-events")
-async def debug_order_events(limit: int = 50) -> dict:
-    """TEMP diagnostic: recent order-audit events (no order payloads/secrets) to see why exit
-    targets did/didn't submit. Remove after diagnosis."""
-    events = storage.list_order_events()
-    sliced = events[-max(1, min(limit, 300)):]
-    out = []
-    for e in sliced:
-        out.append({
-            "event_type": e.get("event_type"),
-            "proposal_id": e.get("proposal_id"),
-            "symbol": e.get("symbol") or (e.get("proposal") or {}).get("symbol"),
-            "target_index": e.get("target_index"),
-            "status": e.get("status"),
-            "recorded_at": e.get("recorded_at"),
-            "account_results": [
-                {
-                    "account_id": r.get("account_id"),
-                    "status": r.get("status"),
-                    "reasons": r.get("reasons"),
-                    "broker_order_id": r.get("broker_order_id"),
-                }
-                for r in (e.get("account_results") or []) if isinstance(r, dict)
-            ],
-        })
-    return {"total_events": len(events), "shown": len(out), "events": out}
-
-
 @app.get("/accounts")
 async def accounts(_: None = Depends(_require_api_key)) -> dict:
     discovered, notes = discover_schwab_accounts(_bridge_config())
@@ -853,6 +825,14 @@ async def send_proposal(
     proposal_id: str,
     request: SendProposalRequest,
     _: None = Depends(_require_api_key),
+    target_percentages: Annotated[
+        str | None,
+        Query(description="Comma-separated exit target percentages (OTOCO bracket sizing)."),
+    ] = None,
+    stop_loss_percent: Annotated[
+        float,
+        Query(ge=0, le=99, description="OTOCO protective stop, percent below entry limit. 0 disables the stop."),
+    ] = float(DEFAULT_STOP_LOSS_PERCENT),
 ) -> SendProposalResponse:
     proposal = storage.find_proposal(proposal_id)
     if proposal is None:
@@ -892,6 +872,34 @@ async def send_proposal(
             }
         )
     order_payload = schwab_order_payload(proposal_to_send, limit_price=request.limit_price)
+    # OTOCO ("1st Triggers OCO"): when the checkbox is on, place single-leg entries as N bracketed
+    # slices so the target/stop are attached at the broker on fill. Verticals fall back to SINGLE.
+    otoco_notes: list[str] = []
+    otoco_payloads: list[dict] | None = None
+    if request.otoco:
+        entry_limit = (
+            request.limit_price
+            if request.limit_price is not None
+            else proposal_to_send.send_limit_price
+        )
+        otoco_payloads = _schwab_otoco_entry_payloads(
+            proposal_to_send,
+            proposal_to_send.quantity,
+            float(entry_limit or 0.0),
+            _parse_target_percentages(target_percentages),
+            stop_loss_percent,
+        )
+        if otoco_payloads:
+            otoco_notes.append(
+                f"OTOCO: entry placed as {len(otoco_payloads)} bracketed slice(s) "
+                f"({'/'.join(str(p['quantity']) for p in otoco_payloads)}); each triggers an "
+                f"OCO [target, stop] on fill."
+            )
+        else:
+            otoco_notes.append(
+                "OTOCO requested but not applied (verticals/no entry price are placed as a plain "
+                "entry; send exits separately)."
+            )
     live_gate_open = settings.service.live_gate_open
     client = SchwabMarketDataClient(settings.schwab)
     results: list[AccountSendResult] = []
@@ -928,37 +936,61 @@ async def send_proposal(
                 )
             )
             continue
+        payloads_to_place = otoco_payloads if otoco_payloads is not None else [order_payload]
         if live_gate_open and request.confirm_live_order:
-            try:
-                placed = client.place_order(account.account_hash, order_payload)
+            placed_ids: list[str | None] = []
+            submit_error: str | None = None
+            for payload in payloads_to_place:
+                try:
+                    placed = client.place_order(account.account_hash, payload)
+                    placed_ids.append(str(placed.get("broker_order_id") or "") or None)
+                except SchwabApiError as exc:
+                    submit_error = str(exc)[:200]
+                    break
+            first_broker_id = next((bid for bid in placed_ids if bid), None)
+            if submit_error is None:
+                submit_reasons = (
+                    [f"otoco_bracket_submitted:{len(placed_ids)}_slices"]
+                    if otoco_payloads is not None
+                    else ["schwab_order_submitted"]
+                )
                 results.append(
                     AccountSendResult(
                         account_id=account.id,
                         account_label=_account_display_label(account),
                         status="submitted",
-                        reasons=["schwab_order_submitted"],
-                        broker_order_id=str(placed.get("broker_order_id") or "") or None,
-                        order_payload=order_payload,
+                        reasons=submit_reasons,
+                        broker_order_id=first_broker_id,
+                        order_payload=payloads_to_place[0],
                     )
                 )
-            except SchwabApiError as exc:
+            else:
+                fail_reasons = [f"schwab_order_submit_failed:{submit_error}"]
+                if placed_ids:
+                    fail_reasons.append(
+                        f"otoco_partial_submitted:{len(placed_ids)}_of_{len(payloads_to_place)}_slices"
+                    )
                 results.append(
                     AccountSendResult(
                         account_id=account.id,
                         account_label=_account_display_label(account),
                         status="blocked",
-                        reasons=[f"schwab_order_submit_failed:{str(exc)[:200]}"],
-                        order_payload=order_payload,
+                        reasons=fail_reasons,
+                        broker_order_id=first_broker_id,
+                        order_payload=payloads_to_place[0],
                     )
                 )
         else:
+            dry_reasons = list(reasons)
+            if otoco_payloads is not None and not dry_reasons:
+                dry_reasons = [f"otoco_payloads_ready:{len(payloads_to_place)}_slices"]
             results.append(
                 AccountSendResult(
                     account_id=account.id,
                     account_label=_account_display_label(account),
                     status="dry_run" if "live_orders_blocked" in reasons else "blocked",
-                    reasons=reasons or ["order_payload_ready"],
-                    order_payload=order_payload,
+                    reasons=dry_reasons or ["order_payload_ready"],
+                    order_payload=payloads_to_place[0],
                 )
             )
 
@@ -974,6 +1006,7 @@ async def send_proposal(
         account_results=results,
         notes=[
             _send_note(status),
+            *otoco_notes,
             f"Recorded at {datetime.now(timezone.utc).replace(microsecond=0).isoformat()}",
         ],
     )
@@ -1049,6 +1082,62 @@ async def send_exit_target(
     )
     storage.append_order_event(_exit_response_audit_event(response, proposal, target_index, order_status))
     return response
+
+
+@app.post("/proposals/{proposal_id}/exits/send-all", response_model=SendProposalResponse)
+async def send_all_exit_targets(
+    proposal_id: str,
+    request: SendExitTargetRequest,
+    _: None = Depends(_require_api_key),
+    target_percentages: Annotated[str | None, Query(description="Comma-separated exit target percentages.")] = None,
+    stop_loss_percent: Annotated[float, Query(ge=0, le=99)] = float(DEFAULT_STOP_LOSS_PERCENT),
+) -> SendProposalResponse:
+    """Submit ALL exit-target OCOs in one call off a SINGLE entry-status fetch — so a transient
+    status blip can't split the exits (the bug that left targets 2/3 unsent). Idempotent: targets
+    already submitted are skipped via _has_submitted_exit_order. Used by the auto-send-on-fill flow."""
+    proposal = storage.find_proposal(proposal_id) or _proposal_from_order_audit(proposal_id)
+    if proposal is None:
+        raise HTTPException(status_code=404, detail="Proposal not found in latest scan or order audit.")
+    accounts, account_notes = discover_schwab_accounts(_bridge_config())
+    client = SchwabMarketDataClient(settings.schwab)
+    order_status = _proposal_order_status_response(
+        proposal=proposal,
+        accounts=accounts,
+        order_client=client,
+        target_percentages=_parse_target_percentages(target_percentages),
+        stop_loss_percent=stop_loss_percent,
+    )
+    target_indices = sorted({t.target_index for acc in order_status.account_statuses for t in acc.exit_targets})
+    if not target_indices:
+        return SendProposalResponse(
+            status="blocked",
+            proposal_id=proposal.id,
+            selected_account_ids=request.selected_account_ids,
+            notes=["No filled entry / exit targets available to send yet.", *account_notes],
+        )
+    merged: list[AccountSendResult] = []
+    notes: list[str] = []
+    for target_index in target_indices:
+        resp = _send_exit_target_response(
+            proposal=proposal,
+            target_index=target_index,
+            request=request,
+            accounts=accounts,
+            account_notes=[],
+            order_status=order_status,  # shared fetch across all targets
+            order_client=client,
+        )
+        storage.append_order_event(_exit_response_audit_event(resp, proposal, target_index, order_status))
+        for r in resp.account_results:
+            merged.append(r.model_copy(update={"reasons": [f"target#{target_index + 1}", *r.reasons]}))
+        notes.extend(resp.notes)
+    return SendProposalResponse(
+        status=_aggregate_status(merged) if merged else "blocked",
+        proposal_id=proposal.id,
+        selected_account_ids=request.selected_account_ids,
+        account_results=merged,
+        notes=notes,
+    )
 
 
 def _rank_candidates(result: ScanResult) -> None:
@@ -1536,6 +1625,77 @@ def _schwab_single_option_oco_exit_payload(proposal: OptionProposal, target: Pro
         "orderStrategyType": "OCO",
         "childOrderStrategies": [target_child, stop_child],
     }
+
+
+def _schwab_otoco_entry_payloads(
+    proposal: OptionProposal,
+    quantity: int,
+    entry_limit_price: float,
+    target_percentages: list[float],
+    stop_loss_percent: float,
+) -> list[dict] | None:
+    """Build OTOCO ("1st Triggers OCO") entry payloads — one per target slice (e.g. 5/3/2).
+
+    Each payload is a TRIGGER entry (BUY_TO_OPEN the slice qty at the entry limit) whose child is
+    the OCO bracket [target LIMIT, stop STOP] for that slice. When the entry fills, Schwab activates
+    the bracket — so the exits are broker-managed and can't be lost to a dashboard/server outage.
+
+    Bracket prices are derived from the ENTRY LIMIT (the fill is unknown at send time), reusing the
+    same _exit_target_previews math the manual exit path uses, so a 10-lot at 20/50/60% maps to
+    5@+20% / 3@+50% / 2@+60% with a shared protective stop. Returns None for verticals / no legs /
+    a non-positive limit (caller falls back to the plain SINGLE entry)."""
+    if proposal.structure != "single" or not proposal.legs or entry_limit_price <= 0:
+        return None
+    previews = _exit_target_previews(
+        proposal,
+        entry_limit_price,
+        float(quantity),
+        target_percentages,
+        stop_loss_percent=stop_loss_percent,
+    )
+    if not previews:
+        return None
+    payloads: list[dict] = []
+    for preview in previews:
+        if preview.stop_trigger_price and preview.stop_trigger_price > 0:
+            child_strategy = _schwab_single_option_oco_exit_payload(proposal, preview)
+        else:
+            # No protective stop -> the trigger fires a single target LIMIT (OTO, not OTOCO).
+            child_strategy = {
+                "session": "NORMAL",
+                "duration": "GOOD_TILL_CANCEL",
+                "orderType": "LIMIT",
+                "complexOrderStrategyType": "NONE",
+                "quantity": preview.qty,
+                "price": f"{preview.target_limit_price:.2f}",
+                "orderStrategyType": "SINGLE",
+                "orderLegCollection": _schwab_exit_order_legs(proposal, preview.qty),
+            }
+        entry_legs = [
+            {
+                "instruction": "BUY_TO_OPEN" if leg.action == "BUY" else "SELL_TO_OPEN",
+                "quantity": preview.qty,
+                "instrument": {
+                    "symbol": leg.broker_symbol or fallback_broker_option_symbol(leg),
+                    "assetType": "OPTION",
+                },
+            }
+            for leg in proposal.legs
+        ]
+        payloads.append(
+            {
+                "session": "NORMAL",
+                "duration": "DAY",
+                "orderType": "LIMIT",
+                "complexOrderStrategyType": "NONE",
+                "quantity": preview.qty,
+                "price": f"{entry_limit_price:.2f}",
+                "orderStrategyType": "TRIGGER",
+                "orderLegCollection": entry_legs,
+                "childOrderStrategies": [child_strategy],
+            }
+        )
+    return payloads
 
 
 def _exit_response_audit_event(
