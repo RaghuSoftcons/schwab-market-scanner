@@ -2044,6 +2044,29 @@ async function sendProposal(index) {
     appState.selectedAccountIds = new Set(result.data.selected_account_ids);
   }
   render();
+  // Auto-check fill status after a live submission (no need to click "Get Order Info").
+  const submitted = result.data.status === "submitted"
+    || (result.data.account_results || []).some(r => r.status === "submitted");
+  if (submitted) autoCheckOrderStatus(proposal.id);
+}
+
+async function autoCheckOrderStatus(proposalId) {
+  // Poll the entry-order status a few times after sending, stopping once an account fills.
+  // Guarded so repeated sends don't stack overlapping pollers.
+  if (!appState._autoChecks) appState._autoChecks = new Set();
+  if (appState._autoChecks.has(proposalId)) return;
+  appState._autoChecks.add(proposalId);
+  try {
+    const delays = [2500, 4000, 6000, 10000, 15000, 30000];
+    for (const wait of delays) {
+      await new Promise(resolve => setTimeout(resolve, wait));
+      if (!appState.sendResponses[proposalId]) return;  // proposal cleared/rebuilt
+      const data = await refreshProposalOrderStatus(proposalId, null);
+      if (data && data.has_filled_accounts) return;     // filled -> stop polling
+    }
+  } finally {
+    appState._autoChecks.delete(proposalId);
+  }
 }
 
 function sendStatusText(response) {
