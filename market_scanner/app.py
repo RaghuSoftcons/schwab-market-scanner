@@ -1910,6 +1910,11 @@ def _exit_target_previews(
     return previews
 
 
+# Front-weighted exit sizing: take more contracts off at the nearer targets and ride a smaller
+# runner to the last. Weights per target count (largest first). e.g. 10 over 3 -> 5/3/2.
+_FRONT_WEIGHTS = {1: [1.0], 2: [0.6, 0.4], 3: [0.5, 0.3, 0.2]}
+
+
 def _exit_target_allocations(
     proposal: OptionProposal,
     filled_contracts: int,
@@ -1922,14 +1927,19 @@ def _exit_target_allocations(
         ]
     if not percentages:
         percentages = [25.0]
-    remaining = filled_contracts
-    allocations: list[tuple[int, int, float]] = []
-    for index, percent in enumerate(percentages):
-        quantity = remaining if index == len(percentages) - 1 else 1
-        remaining -= quantity
-        if quantity > 0:
-            allocations.append((index, quantity, percent))
-    return allocations
+    count = len(percentages)
+    weights = _FRONT_WEIGHTS.get(count, [1.0 / count] * count)
+    # Largest-remainder split so the quantities sum exactly to filled_contracts.
+    raw = [filled_contracts * w for w in weights]
+    qtys = [int(x) for x in raw]
+    leftover = filled_contracts - sum(qtys)
+    # Hand out leftover contracts by largest fractional part; ties go to the earlier target.
+    order = sorted(range(count), key=lambda i: (-(raw[i] - qtys[i]), i))
+    for k in range(leftover):
+        qtys[order[k % count]] += 1
+    # Guarantee front-loading: nearest target gets the most (T1 >= T2 >= T3).
+    qtys.sort(reverse=True)
+    return [(index, qty, percent) for index, (qty, percent) in enumerate(zip(qtys, percentages)) if qty > 0]
 
 
 def _tos_exit_order_line_for_proposal(proposal: OptionProposal, quantity: int, limit_price: float) -> str:
