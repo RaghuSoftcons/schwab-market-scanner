@@ -619,12 +619,12 @@ let appState = {
   muted: false,
   lastTopSymbol: null,
   settings: {
-    settingsVersion: 3,
+    settingsVersion: 4,
     expiry: "AUTO",
     expiryChoices: ["AUTO", "0DTE", "1DTE", "2DTE", "3DTE", "THIS_FRIDAY", "NEXT_WEEK_FRIDAY"],
     allowItm: true,
     closeOnReversal: false,
-    otoco: false,
+    otoco: true,
     maxLoss: 300,
     maxLossChoices: [200, 300, 400, 500],
     entryOffsetCents: 10,
@@ -700,8 +700,14 @@ function loadDashboardSettings() {
     if (Number(saved.settingsVersion || 0) < 3) {
       appState.settings.expiry = "AUTO";
     }
+    // v4: OTOCO bracketed entry is now ON by default; force-enable once for existing users
+    // (their saved settings predate the flag or hold the old default OFF). Their toggle is
+    // respected afterward since settingsVersion is bumped to 4.
+    if (Number(saved.settingsVersion || 0) < 4) {
+      appState.settings.otoco = true;
+    }
     appState.settings.expiryChoices = ["AUTO", "0DTE", "1DTE", "2DTE", "3DTE", "THIS_FRIDAY", "NEXT_WEEK_FRIDAY"];
-    appState.settings.settingsVersion = 3;
+    appState.settings.settingsVersion = 4;
   } catch {
     return;
   }
