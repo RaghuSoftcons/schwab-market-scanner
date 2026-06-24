@@ -120,7 +120,10 @@ class MarketScanner:
         scanned_at: datetime,
     ) -> dict[str, TickerMetrics]:
         metrics: dict[str, TickerMetrics] = {}
-        max_workers = max(1, min(8, len(symbols)))
+        # Each symbol does 2 blocking Schwab candle calls; widen the pool so a full ~44-symbol
+        # universe fetches in a few waves instead of ~6 (cuts the manual "Refresh Prices" wait).
+        # Overridable via SCANNER_METRICS_WORKERS; stays well under Schwab's per-minute limit.
+        max_workers = max(1, min(int(os.environ.get("SCANNER_METRICS_WORKERS", "16")), len(symbols)))
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {
                 executor.submit(self._safe_metrics, symbol, quotes.get(symbol), scanned_at): symbol
