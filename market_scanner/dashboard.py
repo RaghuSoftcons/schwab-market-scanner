@@ -222,7 +222,7 @@ _DASHBOARD_TEMPLATE = """<!doctype html>
     .pos-table th.sortable:hover { color: var(--ink); }
     .pos-table td { padding: 6px 8px; border-bottom: 1px solid var(--line-soft); white-space: nowrap; }
     .pos-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
-    .pos-table td.mono { font-family: Consolas, "Courier New", monospace; font-size: 11px; }
+    .pos-table td.mono { font-family: Consolas, "Courier New", monospace; font-size: 11px; white-space: normal; overflow-wrap: anywhere; }
     .pos-action { text-align: right; }
     .danger.small { padding: 2px 8px; font-size: 11px; min-height: 0; }
 
@@ -1050,7 +1050,7 @@ function renderPositions() {
       <td class="pos-action">${action}<div class="send-status tiny" id="${statusId}"></div></td>
     </tr>`;
   }).join("");
-  body.innerHTML = `<table class="pos-table"><thead><tr>${head}</tr></thead><tbody>${rows}</tbody></table>${errs}`;
+  body.innerHTML = `<div class="table-wrap"><table class="pos-table"><thead><tr>${head}</tr></thead><tbody>${rows}</tbody></table></div>${errs}`;
 }
 
 async function closePosition(brokerSymbol, accountId, qty, isLong, statusId) {
