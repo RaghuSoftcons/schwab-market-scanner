@@ -9,6 +9,7 @@ from market_scanner.app import (
     _parse_osi,
     _position_avg_mark_pnl,
     _reconstruct_orders_from_transactions,
+    _stop_prices_for_orders,
     _target_prices_for_orders,
 )
 
@@ -142,3 +143,29 @@ def test_target_prices_for_orders_reads_closing_limit() -> None:
     ]
     targets = _target_prices_for_orders(orders)
     assert targets[LONG_10C.replace(" ", "")] == 1.20
+
+
+def test_stop_prices_for_orders_reads_closing_stop() -> None:
+    orders = [
+        {"status": "WORKING", "orderType": "STOP", "stopPrice": "0.50", "orderLegCollection": [
+            {"instruction": "SELL_TO_CLOSE", "instrument": {"symbol": LONG_10C}}]},
+        {"status": "WORKING", "orderType": "LIMIT", "price": "1.20", "orderLegCollection": [
+            {"instruction": "SELL_TO_CLOSE", "instrument": {"symbol": LONG_10C}}]},  # target, not a stop
+    ]
+    stops = _stop_prices_for_orders(orders)
+    assert stops[LONG_10C.replace(" ", "")] == 0.50
+
+
+def test_otoco_bracket_target_and_stop_from_oco_children() -> None:
+    # An OTOCO entry: TRIGGER -> OCO[ target LIMIT, stop STOP ]. Both columns read the children.
+    orders = [{"status": "WORKING", "orderType": "TRIGGER", "orderLegCollection": [
+        {"instruction": "BUY_TO_OPEN", "instrument": {"symbol": LONG_10C}}],
+        "childOrderStrategies": [{"orderStrategyType": "OCO", "childOrderStrategies": [
+            {"status": "WORKING", "orderType": "LIMIT", "price": "1.20", "orderLegCollection": [
+                {"instruction": "SELL_TO_CLOSE", "instrument": {"symbol": LONG_10C}}]},
+            {"status": "WORKING", "orderType": "STOP", "stopPrice": "0.50", "orderLegCollection": [
+                {"instruction": "SELL_TO_CLOSE", "instrument": {"symbol": LONG_10C}}]},
+        ]}]}]
+    key = LONG_10C.replace(" ", "")
+    assert _target_prices_for_orders(orders)[key] == 1.20
+    assert _stop_prices_for_orders(orders)[key] == 0.50

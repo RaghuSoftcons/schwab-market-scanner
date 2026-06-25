@@ -144,6 +144,7 @@ class PositionRow(BaseModel):
     source: str = "schwab"      # tracked | schwab
     sent_at: str = ""
     target_price: float | None = None   # resting closing-LIMIT price (the profit target), if any
+    stop_price: float | None = None      # resting closing-STOP trigger (the protective stop), if any
     spread_id: str | None = None        # shared id for the two legs of one vertical (combine in UI)
     is_spread_leg: bool = False         # one leg of a vertical -> Close blocked (naked-option guard)
     spread_aggregated: bool = False     # Schwab blended this strike across spreads (can't split)

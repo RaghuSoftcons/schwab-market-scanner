@@ -717,6 +717,39 @@ def _target_prices_for_orders(orders: list) -> dict:
     return out
 
 
+def _stop_prices_for_orders(orders: list) -> dict:
+    """Map space-stripped OSI symbol -> the trigger of a resting CLOSING stop order (the OCO stop
+    child). Mirror of _target_prices_for_orders but reads STOP `stopPrice`. Powers the Stop column."""
+    closing = {"SELL_TO_CLOSE", "BUY_TO_CLOSE"}
+    out: dict = {}
+
+    def parse_price(value):
+        try:
+            return round(float(value), 2)
+        except (TypeError, ValueError):
+            return None
+
+    def scan(order):
+        if not isinstance(order, dict):
+            return
+        status = str(order.get("status", "")).upper()
+        otype = str(order.get("orderType", "")).upper()
+        if status not in _TERMINAL_ORDER_STATUSES and otype in {"STOP", "STOP_LIMIT"}:
+            price = parse_price(order.get("stopPrice"))
+            if price is not None:
+                for leg in (order.get("orderLegCollection") or []):
+                    if str(leg.get("instruction", "")).upper() in closing:
+                        sym = str((leg.get("instrument") or {}).get("symbol", "")).replace(" ", "")
+                        if sym:
+                            out.setdefault(sym, price)
+        for child in (order.get("childOrderStrategies") or []):
+            scan(child)
+
+    for order in orders:
+        scan(order)
+    return out
+
+
 def _load_spread_structure() -> dict:
     """Load the persisted per-account spread structure; {} on any problem so a bad file never blocks."""
     try:
@@ -825,6 +858,7 @@ def _positionrow_from_dict(d: dict, tracked_syms: set[str]) -> PositionRow:
         is_spread=is_leg,
         source="schwab",
         target_price=d.get("target_price"),
+        stop_price=d.get("stop_price"),
         spread_id=d.get("spread_id"),
         is_spread_leg=is_leg,
         spread_aggregated=bool(d.get("spread_aggregated")),
@@ -861,12 +895,18 @@ def _all_positions_response(client: SchwabMarketDataClient, *, fresh: bool = Fal
         if structure:
             dicts = _apply_spread_structure(dicts, structure)
         _mark_spread_legs(dicts)
+        targets: dict = {}
+        stops: dict = {}
         try:
-            targets = _target_prices_for_orders(client.get_orders(account.account_hash, frm, to))
+            acct_orders = client.get_orders(account.account_hash, frm, to)
+            targets = _target_prices_for_orders(acct_orders)
+            stops = _stop_prices_for_orders(acct_orders)
         except (SchwabApiError, SchwabOAuthError):
-            targets = {}
+            pass
         for d in dicts:
-            d["target_price"] = targets.get(str(d.get("symbol") or "").replace(" ", ""))
+            key = str(d.get("symbol") or "").replace(" ", "")
+            d["target_price"] = targets.get(key)
+            d["stop_price"] = stops.get(key)
         dicts_all.extend(dicts)
     tracked = _tracked_broker_symbols()
     rows = [_positionrow_from_dict(d, tracked) for d in dicts_all]
@@ -892,6 +932,20 @@ def _tracked_positions_response(client: SchwabMarketDataClient | None = None) ->
             except Exception:  # noqa: BLE001 -- enrichment is best-effort
                 cache[account_hash] = []
         return cache[account_hash]
+
+    orders_cache: dict[str, tuple[dict, dict]] = {}  # hash -> (targets, stops)
+    _now = datetime.now(timezone.utc)
+    _frm = (_now - timedelta(days=60)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    _to = _now.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+    def account_targets_stops(account_hash: str) -> tuple[dict, dict]:
+        if account_hash not in orders_cache:
+            try:
+                od = client.get_orders(account_hash, _frm, _to) if (client and account_hash) else []
+                orders_cache[account_hash] = (_target_prices_for_orders(od), _stop_prices_for_orders(od))
+            except Exception:  # noqa: BLE001 -- Target/Stop are a nicety, never fail the panel
+                orders_cache[account_hash] = ({}, {})
+        return orders_cache[account_hash]
 
     rows: list[PositionRow] = []
     for p in active_positions.values():
@@ -922,11 +976,18 @@ def _tracked_positions_response(client: SchwabMarketDataClient | None = None) ->
             qty = float(primary.get("qty", 0) or 0)
             if p.get("direction") == "short":
                 qty = -qty
+            primary_sym = str(primary.get("broker_symbol", "") or "")
+            target_price = stop_price = None
+            if client and account_hash:
+                targets, stops = account_targets_stops(account_hash)
+                key = primary_sym.replace(" ", "")
+                target_price = targets.get(key)
+                stop_price = stops.get(key)
             rows.append(
                 PositionRow(
                     account_id=aid,
                     account_label=_account_alias(aid),
-                    symbol=str(primary.get("broker_symbol", "") or ""),
+                    symbol=primary_sym,
                     underlying=p.get("symbol", ""),
                     qty=qty,
                     avg=avg,
@@ -937,6 +998,8 @@ def _tracked_positions_response(client: SchwabMarketDataClient | None = None) ->
                     is_spread=is_spread,
                     source="tracked",
                     sent_at=p.get("sent_at", ""),
+                    target_price=target_price,
+                    stop_price=stop_price,
                 )
             )
     return PositionsResponse(

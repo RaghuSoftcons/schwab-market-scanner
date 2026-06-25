@@ -962,6 +962,7 @@ function combineSpreadRows(positions) {
       avg: netDebit, mark: netMark,
       unrealized_pnl: legs.reduce((s, l) => s + (Number(l.unrealized_pnl) || 0), 0),
       target_price: long.target_price ?? short.target_price ?? null,
+      stop_price: long.stop_price ?? short.stop_price ?? null,
       is_spread: true, closeable: false,
     });
   }
@@ -971,10 +972,11 @@ function combineSpreadRows(positions) {
 const POSITION_COLUMNS = [
   ["account_label", "ACCOUNT", "text"],
   ["symbol", "SYMBOL", "text"],
+  ["target_price", "TARGET", "num"],
+  ["stop_price", "STOP", "num"],
   ["qty", "QTY", "num"],
   ["avg", "AVG", "num"],
   ["mark", "MARK", "num"],
-  ["target_price", "TARGET", "num"],
   ["unrealized_pnl", "UNREALIZED", "num"],
 ];
 
@@ -1034,13 +1036,16 @@ function renderPositions() {
       ? `<span class="muted tiny">${pos.spread_aggregated ? "spread (agg)" : "spread"}</span>`
       : `<button class="danger small" onclick="closePosition('${sym}','${acct}',${Math.abs(Number(pos.qty)) || 1},${isLong},'${statusId}')">Close</button>`;
     const symLabel = pos._display || formatOptionLabel(pos.symbol);
+    const tgtCell = pos.target_price == null ? "--" : Number(pos.target_price).toFixed(2);
+    const stopCell = pos.stop_price == null ? "--" : `<span style="color:#c0392b">${Number(pos.stop_price).toFixed(2)}</span>`;
     return `<tr>
       <td>${esc(pos.account_label || pos.account_id)}</td>
       <td class="mono">${esc(symLabel)}</td>
+      <td class="num">${tgtCell}</td>
+      <td class="num">${stopCell}</td>
       <td class="num">${qtyStr}</td>
       <td class="num">${pos.avg == null ? "--" : Number(pos.avg).toFixed(2)}</td>
       <td class="num">${pos.mark == null ? "--" : Number(pos.mark).toFixed(2)}</td>
-      <td class="num">${pos.target_price == null ? "--" : Number(pos.target_price).toFixed(2)}</td>
       <td class="num">${upnl}</td>
       <td class="pos-action">${action}<div class="send-status tiny" id="${statusId}"></div></td>
     </tr>`;
