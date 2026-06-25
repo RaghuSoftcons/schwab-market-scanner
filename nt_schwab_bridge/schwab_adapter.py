@@ -636,6 +636,35 @@ class SchwabMarketDataClient:
             raise SchwabApiError(f"Schwab order status request failed: {status_code} {response_text[:500]}")
         return payload
 
+    def get_orders(
+        self,
+        account_hash: str,
+        from_entered_time: str,
+        to_entered_time: str,
+        max_results: int = 300,
+    ) -> list[dict[str, Any]]:
+        """List orders for an account in a time window (returns a JSON list).
+
+        Used for the Open Positions Target column (resting closing-LIMIT price) and the safe
+        per-row Close (cancel ALL resting orders for a symbol before flattening)."""
+        if not account_hash.strip():
+            raise SchwabApiError("Schwab account hash is required before listing orders.")
+        url = f"{self.base_url}/trader/v1/accounts/{account_hash}/orders"
+        params = {
+            "fromEnteredTime": from_entered_time,
+            "toEnteredTime": to_entered_time,
+            "maxResults": max_results,
+        }
+        try:
+            with self._http_client_factory() as client:
+                response = client.get(url, headers=self._headers(), params=params)
+        except Exception as exc:
+            raise SchwabApiError(f"Schwab order list request failed: {exc}") from exc
+        if response.status_code >= 400:
+            raise SchwabApiError(f"Schwab order list failed: {response.status_code} {response.text[:500]}")
+        data = response.json() if response.text.strip() else []
+        return data if isinstance(data, list) else []
+
     def get_transactions(
         self, account_hash: str, start: datetime, end: datetime, types: str | None = None
     ) -> list[dict[str, Any]]:

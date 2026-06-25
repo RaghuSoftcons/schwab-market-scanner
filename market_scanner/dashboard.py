@@ -905,7 +905,9 @@ async function loadPositions(manual) {
   }
   if (byId("positions-status")) byId("positions-status").textContent = "loading";
   try {
-    const result = await fetchJson(`/positions?source=${encodeURIComponent(mode)}`);
+    // Manual Refresh rebuilds the slow order#-based spread structure on the server (fresh=true).
+    const freshParam = (manual && mode === "all") ? "&fresh=true" : "";
+    const result = await fetchJson(`/positions?source=${encodeURIComponent(mode)}${freshParam}`);
     if (result.ok) {
       appState.positions = result.data.positions || [];
       appState.positionsNote = result.data.note || "";
@@ -924,12 +926,55 @@ async function loadPositions(manual) {
   }
 }
 
+function formatExpiry(yymmdd) {
+  if (!/^[0-9]{6}$/.test(yymmdd)) return yymmdd;
+  return `${Number(yymmdd.slice(2, 4))}/${Number(yymmdd.slice(4, 6))}/${yymmdd.slice(0, 2)}`;
+}
+// "SOXS  260821C00010000" -> "SOXS 8/21/26 10 C"
+function formatOptionLabel(sym) {
+  const compact = String(sym || "").replace(/ /g, "");
+  if (compact.length < 15) return sym || "";
+  const under = compact.slice(0, compact.length - 15);
+  const exp = compact.slice(-15, -9), right = compact.slice(-9, -8);
+  const strike = parseInt(compact.slice(-8), 10) / 1000;
+  const strikeStr = Number.isFinite(strike) ? String(strike) : compact.slice(-8);
+  return `${under} ${formatExpiry(exp)} ${strikeStr} ${right}`;
+}
+// Group the two legs of a vertical (shared spread_id) into one net line per the order#-reconstruction.
+function combineSpreadRows(positions) {
+  const groups = {};
+  const out = [];
+  for (const p of positions) {
+    if (p.spread_id) (groups[p.account_id + "|" + p.spread_id] ||= []).push(p);
+    else out.push(p);
+  }
+  for (const key in groups) {
+    const legs = groups[key];
+    if (legs.length !== 2) { out.push(...legs); continue; }
+    const long = legs.find(l => Number(l.qty) > 0) || legs[0];
+    const short = legs.find(l => Number(l.qty) < 0) || legs[1];
+    const netDebit = (long.avg != null && short.avg != null) ? (long.avg - short.avg) : null;
+    const netMark = (long.mark != null && short.mark != null) ? (long.mark - short.mark) : null;
+    out.push({
+      account_id: long.account_id, account_label: long.account_label, underlying: long.underlying,
+      _display: `${formatOptionLabel(long.symbol)} / ${formatOptionLabel(short.symbol)}`,
+      qty: Math.abs(Number(long.qty)),
+      avg: netDebit, mark: netMark,
+      unrealized_pnl: legs.reduce((s, l) => s + (Number(l.unrealized_pnl) || 0), 0),
+      target_price: long.target_price ?? short.target_price ?? null,
+      is_spread: true, closeable: false,
+    });
+  }
+  return out;
+}
+
 const POSITION_COLUMNS = [
   ["account_label", "ACCOUNT", "text"],
   ["symbol", "SYMBOL", "text"],
   ["qty", "QTY", "num"],
   ["avg", "AVG", "num"],
   ["mark", "MARK", "num"],
+  ["target_price", "TARGET", "num"],
   ["unrealized_pnl", "UNREALIZED", "num"],
 ];
 
@@ -944,7 +989,7 @@ function setPositionsSort(key) {
 }
 
 function sortedPositions() {
-  const positions = (appState.positions || []).slice();
+  const positions = combineSpreadRows((appState.positions || []).slice());
   const key = appState.positionsSort || "unrealized_pnl";
   const dir = appState.positionsSortDir || "desc";
   const col = POSITION_COLUMNS.find(c => c[0] === key);
@@ -985,15 +1030,17 @@ function renderPositions() {
     const qtyStr = (Number(pos.qty) > 0 ? "+" : "") + Number(pos.qty);
     const upnl = (pos.unrealized_pnl == null) ? "--" : `<span class="${pnlClass(pos.unrealized_pnl)}">${moneySigned(pos.unrealized_pnl)}</span>`;
     const statusId = `pos-status-${esc(pos.account_id)}-${esc(pos.symbol)}`;
-    const action = pos.is_spread
-      ? `<span class="muted tiny">spread</span>`
+    const action = (pos.is_spread || pos.is_spread_leg)
+      ? `<span class="muted tiny">${pos.spread_aggregated ? "spread (agg)" : "spread"}</span>`
       : `<button class="danger small" onclick="closePosition('${sym}','${acct}',${Math.abs(Number(pos.qty)) || 1},${isLong},'${statusId}')">Close</button>`;
+    const symLabel = pos._display || formatOptionLabel(pos.symbol);
     return `<tr>
       <td>${esc(pos.account_label || pos.account_id)}</td>
-      <td class="mono">${esc(pos.symbol)}</td>
+      <td class="mono">${esc(symLabel)}</td>
       <td class="num">${qtyStr}</td>
       <td class="num">${pos.avg == null ? "--" : Number(pos.avg).toFixed(2)}</td>
       <td class="num">${pos.mark == null ? "--" : Number(pos.mark).toFixed(2)}</td>
+      <td class="num">${pos.target_price == null ? "--" : Number(pos.target_price).toFixed(2)}</td>
       <td class="num">${upnl}</td>
       <td class="pos-action">${action}<div class="send-status tiny" id="${statusId}"></div></td>
     </tr>`;

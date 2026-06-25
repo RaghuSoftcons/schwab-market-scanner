@@ -273,8 +273,14 @@ async def pnl_summary() -> dict:
 
 @app.post("/pnl/sync")
 async def pnl_sync(_: None = Depends(_require_api_key)) -> dict:
-    """Sync realized P&L from Schwab transactions (14-day lookback, deduped) and return the summary."""
-    return await asyncio.to_thread(_sync_schwab_pnl)
+    """Sync realized P&L from Schwab transactions (14-day lookback, deduped) and return the summary.
+    Also refreshes the order#-based spread structure on this cadence (best-effort)."""
+    result = await asyncio.to_thread(_sync_schwab_pnl)
+    try:
+        await asyncio.to_thread(_sync_spread_structure)
+    except Exception:  # noqa: BLE001 -- spread structure is an enhancement; never fail the P&L sync
+        pass
+    return result
 
 
 _TIER_LABELS = {
@@ -394,15 +400,44 @@ def _pos_float(value) -> float:
         return 0.0
 
 
+def _position_avg_mark_pnl(raw: dict) -> tuple[float | None, float | None, float | None]:
+    """(avg, mark, unrealized) for a raw Schwab option position, matching thinkorswim.
+
+    AVG-FIELD TRAP: use averageLongPrice / averageShortPrice (the ACTUAL average trade price,
+    matches TOS) — NOT averagePrice, which can be a tax-lot-adjusted basis (e.g. a wash-sale
+    short showed averagePrice 28.71 vs the real fill 53.72). When the trade price differs from
+    that basis, Schwab's long/shortOpenProfitLoss is built on the basis, so we recompute
+    unrealized from (mark - avg) to stay consistent with the avg we display; otherwise we use
+    Schwab's open P&L verbatim. Multiplier 100 for options."""
+    inst = raw.get("instrument") if isinstance(raw.get("instrument"), dict) else {}
+    mult = 100.0 if str((inst or {}).get("assetType", "")) == "OPTION" else 1.0
+    long_q = _pos_float(raw.get("longQuantity"))
+    short_q = _pos_float(raw.get("shortQuantity"))
+    net = long_q - short_q
+    mv = _pos_float(raw.get("marketValue"))
+    mark = round(mv / (net * mult), 2) if net else None
+    tax_lot_basis = _pos_float(raw.get("averagePrice")) or None
+    if long_q:
+        avg = _pos_float(raw.get("averageLongPrice")) or None
+        schwab_pl = _pos_float(raw.get("longOpenProfitLoss"))
+    else:
+        avg = _pos_float(raw.get("averageShortPrice")) or None
+        schwab_pl = _pos_float(raw.get("shortOpenProfitLoss"))
+    if avg is None:
+        avg = tax_lot_basis
+    if avg is not None and mark is not None and tax_lot_basis is not None and abs(avg - tax_lot_basis) > 0.005:
+        unrealized = round((mark - avg) * mult * net, 2)
+    else:
+        unrealized = round(schwab_pl, 2)
+    return avg, mark, unrealized
+
+
 def _row_from_raw(account_id: str, raw: dict, is_spread: bool) -> PositionRow:
     """Build a table row from a raw Schwab position dict (ACCOUNT/SYMBOL/QTY/AVG/MARK/UNREALIZED)."""
     inst = raw.get("instrument") if isinstance(raw.get("instrument"), dict) else {}
     broker_symbol = str((inst or {}).get("symbol", "") or "")
     net = _pos_float(raw.get("longQuantity")) - _pos_float(raw.get("shortQuantity"))
-    avg = _pos_float(raw.get("averagePrice")) or None
-    mv = _pos_float(raw.get("marketValue"))
-    mark = round(mv / (net * 100), 2) if net else None
-    upnl = round(_pos_float(raw.get("longOpenProfitLoss")) + _pos_float(raw.get("shortOpenProfitLoss")), 2)
+    avg, mark, upnl = _position_avg_mark_pnl(raw)
     parsed = _parse_broker_option_symbol(broker_symbol)
     underlying = parsed[0] if parsed else str((inst or {}).get("underlyingSymbol", "") or "")
     return PositionRow(
@@ -421,40 +456,423 @@ def _row_from_raw(account_id: str, raw: dict, is_spread: bool) -> PositionRow:
     )
 
 
-def _all_positions_response(client: SchwabMarketDataClient) -> PositionsResponse:
-    """Authoritative view: every OPTION position across enabled accounts (Unified-Platform style).
-    Multi-leg groups (same account+underlying+expiry, >1 leg) are flagged as spreads (view-only)."""
+# ----- Open Positions panel: spread detection + order#-based reconstruction (ported from -----
+# nt-bridge-v2). These operate on normalized position dicts (keys: symbol, underlying, quantity
+# [signed], average_price, mark, market_value, asset_type, unrealized_pnl) so the reference logic
+# ports verbatim; _all_positions_response builds those dicts then converts to PositionRow.
+
+_TERMINAL_ORDER_STATUSES = {"FILLED", "CANCELED", "REJECTED", "EXPIRED", "REPLACED"}
+_SPREAD_STRUCTURE_LOOKBACK_DAYS = 180
+_SPREAD_STRUCTURE_PATH = settings.storage.path / "spread_structure.json"
+
+
+def _parse_osi(symbol: str) -> tuple[str, str, float | None]:
+    """(expiry YYMMDD, right C/P, strike) from an OSI option symbol; strike None if unparseable."""
+    compact = str(symbol or "").replace(" ", "")
+    if len(compact) < 15:
+        return "", "", None
+    expiry = compact[-15:-9]
+    right = compact[-9:-8]
+    try:
+        strike = int(compact[-8:]) / 1000.0
+    except ValueError:
+        strike = None
+    return expiry, right, strike
+
+
+def _mark_spread_legs(positions: list) -> None:
+    """Tag the legs of a vertical (same account/underlying/expiry/right) with a shared `spread_id`.
+    Pairs each SHORT with its NEAREST-strike LONG; equal qty -> combinable spread_id, qty mismatch
+    -> spread_aggregated (Schwab blended the strike across spreads, can't split). Standalone longs /
+    naked shorts stay singles. Closing a paired leg alone would leave a naked option (blocked).
+    Skips rows already grouped by the order#-based reconstruction. Mutates in place."""
+    for pos in positions:
+        if pos.get("from_structure"):
+            continue
+        pos["is_spread_leg"] = False
+        pos.pop("spread_id", None)
+        pos.pop("spread_aggregated", None)
+    groups: dict = {}
+    for pos in positions:
+        if pos.get("from_structure"):
+            continue
+        expiry, right, strike = _parse_osi(pos.get("symbol", ""))
+        if strike is None:
+            continue
+        groups.setdefault((pos.get("underlying"), expiry, right), []).append((strike, pos))
+    for (underlying, expiry, right), items in groups.items():
+        longs = sorted(((s, p) for s, p in items if (p.get("quantity") or 0) > 0), key=lambda t: t[0])
+        shorts = sorted(((s, p) for s, p in items if (p.get("quantity") or 0) < 0), key=lambda t: t[0])
+        used: set = set()
+        for short_strike, short_pos in shorts:
+            best_i = best_d = None
+            for i, (long_strike, _lp) in enumerate(longs):
+                if i in used:
+                    continue
+                dist = abs(long_strike - short_strike)
+                if best_d is None or dist < best_d:
+                    best_d, best_i = dist, i
+            if best_i is None:
+                continue
+            long_strike, long_pos = longs[best_i]
+            long_qty = abs(long_pos.get("quantity") or 0)
+            short_qty = abs(short_pos.get("quantity") or 0)
+            short_pos["is_spread_leg"] = True
+            long_pos["is_spread_leg"] = True
+            if abs(long_qty - short_qty) < 1e-9:
+                used.add(best_i)
+                spread_id = f"{underlying}|{expiry}|{right}|{long_strike:g}-{short_strike:g}"
+                short_pos["spread_id"] = spread_id
+                long_pos["spread_id"] = spread_id
+            else:
+                short_pos["spread_aggregated"] = True
+                long_pos["spread_aggregated"] = True
+
+
+def _reconstruct_orders_from_transactions(transactions) -> dict:
+    """Group OPENING option fills by order id to recover per-spread structure Schwab's AGGREGATED
+    positions feed loses. 2-leg vertical order -> a spread def (each leg's real fill); 1-leg -> a
+    single def. Excludes RECEIVE_AND_DELIVER (assignment/expiration/transfer $0 legs).
+    Returns {"spreads": [...], "singles": [...]}."""
+    from collections import defaultdict
+
+    by_order: dict = defaultdict(list)
+    for txn in transactions:
+        if not isinstance(txn, dict):
+            continue
+        if str(txn.get("type") or "").upper() != "TRADE":
+            continue
+        order_id = txn.get("orderId") or txn.get("orderNumber") or txn.get("activityId")
+        if order_id is None:
+            continue
+        for item in (txn.get("transferItems") or []):
+            instrument = item.get("instrument") or {}
+            if str(instrument.get("assetType") or "") != "OPTION":
+                continue
+            effect = str(item.get("positionEffect") or "").upper()
+            if effect and effect != "OPENING":
+                continue
+            symbol = str(instrument.get("symbol") or "").replace(" ", "")
+            amount = _to_float_or_none(item.get("amount"))
+            price = _to_float_or_none(item.get("price"))
+            if not symbol or amount is None or price is None:
+                continue
+            by_order[order_id].append({
+                "symbol": symbol, "amount": amount, "price": price,
+                "underlying": instrument.get("underlyingSymbol") or "",
+            })
+
+    spreads: list = []
+    singles: list = []
+    for order_id, legs in by_order.items():
+        if len(legs) == 1:
+            leg = legs[0]
+            singles.append({
+                "symbol": leg["symbol"], "fill": round(leg["price"], 4),
+                "qty": abs(leg["amount"]), "order_id": str(order_id),
+            })
+            continue
+        if len(legs) != 2:
+            continue
+        longs = [item for item in legs if item["amount"] > 0]
+        shorts = [item for item in legs if item["amount"] < 0]
+        if len(longs) != 1 or len(shorts) != 1:
+            continue
+        long_leg, short_leg = longs[0], shorts[0]
+        long_exp, long_right, long_strike = _parse_osi(long_leg["symbol"])
+        short_exp, short_right, short_strike = _parse_osi(short_leg["symbol"])
+        if long_exp != short_exp or long_right != short_right or long_strike is None or short_strike is None:
+            continue
+        spreads.append({
+            "underlying": long_leg["underlying"] or short_leg["underlying"],
+            "expiry": long_exp, "right": long_right,
+            "long_symbol": long_leg["symbol"], "short_symbol": short_leg["symbol"],
+            "long_strike": long_strike, "short_strike": short_strike,
+            "long_fill": round(long_leg["price"], 4), "short_fill": round(short_leg["price"], 4),
+            "qty": min(abs(long_leg["amount"]), abs(short_leg["amount"])),
+            "order_id": str(order_id),
+        })
+    return {"spreads": spreads, "singles": singles}
+
+
+def _apply_spread_structure(positions: list, structure: dict) -> list:
+    """Rebuild AGGREGATED positions into per-order pieces using order#-grouped `structure`, so a
+    strike shared across spreads/singles shows as its real pieces. Spread legs get a shared
+    spread_id=ord-<id>; per-piece unrealized recomputed from each piece's fill + live mark.
+    Returns a NEW list (aggregated originals replaced)."""
+    spreads = (structure or {}).get("spreads") or []
+    singles = (structure or {}).get("singles") or []
+    pos_by_sym: dict = {}
+    remaining: dict = {}
+    for pos in positions:
+        compact = str(pos.get("symbol") or "").replace(" ", "")
+        pos_by_sym[compact] = pos
+        remaining[compact] = remaining.get(compact, 0.0) + (pos.get("quantity") or 0.0)
+
+    def make_row(template: dict, qty: float, avg, spread_id=None) -> dict:
+        multiplier = 100.0 if str(template.get("asset_type")) == "OPTION" else 1.0
+        mark = template.get("mark")
+        row = dict(template)
+        row["quantity"] = qty
+        row["average_price"] = avg
+        row["market_value"] = (mark * multiplier * qty) if mark is not None else template.get("market_value")
+        row["unrealized_pnl"] = ((mark - avg) * multiplier * qty) if (mark is not None and avg is not None) else None
+        row["from_structure"] = bool(spread_id)
+        row["is_spread_leg"] = bool(spread_id)
+        row.pop("spread_aggregated", None)
+        if spread_id:
+            row["spread_id"] = spread_id
+        else:
+            row.pop("spread_id", None)
+        return row
+
+    out: list = []
+    for spread in spreads:
+        long_sym = str(spread.get("long_symbol") or "").replace(" ", "")
+        short_sym = str(spread.get("short_symbol") or "").replace(" ", "")
+        if long_sym not in pos_by_sym or short_sym not in pos_by_sym:
+            continue
+        count = min(spread.get("qty") or 0.0, remaining.get(long_sym, 0.0), -remaining.get(short_sym, 0.0))
+        if count <= 0:
+            continue
+        remaining[long_sym] -= count
+        remaining[short_sym] += count
+        spread_id = f"ord-{spread.get('order_id')}"
+        out.append(make_row(pos_by_sym[long_sym], count, spread.get("long_fill"), spread_id))
+        out.append(make_row(pos_by_sym[short_sym], -count, spread.get("short_fill"), spread_id))
+
+    for single in singles:
+        compact = str(single.get("symbol") or "").replace(" ", "")
+        held = remaining.get(compact, 0.0)
+        if compact not in pos_by_sym or abs(held) < 1e-9:
+            continue
+        sign = 1.0 if held > 0 else -1.0
+        count = min(single.get("qty") or 0.0, abs(held))
+        if count <= 0:
+            continue
+        remaining[compact] -= sign * count
+        out.append(make_row(pos_by_sym[compact], sign * count, single.get("fill")))
+
+    for compact, qty in remaining.items():
+        if abs(qty) < 1e-9:
+            continue
+        pos = pos_by_sym[compact]
+        out.append(make_row(pos, qty, pos.get("average_price")))
+    return out
+
+
+def _cancelable_order_ids_for_symbol(orders: list, osi_symbol: str) -> list:
+    """Top-level order ids (still cancelable) whose legs reference the given option symbol
+    (recurses OCO/TRIGGER children — so OTOCO brackets are caught)."""
+    target = str(osi_symbol or "").replace(" ", "")
+
+    def references(order: dict) -> bool:
+        for leg in (order.get("orderLegCollection") or []):
+            if str((leg.get("instrument") or {}).get("symbol", "")).replace(" ", "") == target:
+                return True
+        return any(references(ch) for ch in (order.get("childOrderStrategies") or []) if isinstance(ch, dict))
+
+    ids: list = []
+    for order in orders:
+        if not isinstance(order, dict) or not references(order):
+            continue
+        status = str(order.get("status", "")).upper()
+        cancelable = order.get("cancelable", status not in _TERMINAL_ORDER_STATUSES)
+        oid = order.get("orderId")
+        if cancelable and oid is not None:
+            ids.append(oid)
+    return list(dict.fromkeys(ids))
+
+
+def _target_prices_for_orders(orders: list) -> dict:
+    """Map space-stripped OSI symbol -> price of a resting CLOSING limit order (the profit target).
+    Skips stop legs and terminal orders; reads OCO/TRIGGER children. Powers the Target column."""
+    closing = {"SELL_TO_CLOSE", "BUY_TO_CLOSE"}
+    out: dict = {}
+
+    def parse_price(value):
+        try:
+            return round(float(value), 2)
+        except (TypeError, ValueError):
+            return None
+
+    def scan(order):
+        if not isinstance(order, dict):
+            return
+        status = str(order.get("status", "")).upper()
+        otype = str(order.get("orderType", "")).upper()
+        if status not in _TERMINAL_ORDER_STATUSES and otype in {"LIMIT", "NET_CREDIT", "NET_DEBIT"}:
+            price = parse_price(order.get("price"))
+            if price is not None:
+                for leg in (order.get("orderLegCollection") or []):
+                    if str(leg.get("instruction", "")).upper() in closing:
+                        sym = str((leg.get("instrument") or {}).get("symbol", "")).replace(" ", "")
+                        if sym:
+                            out.setdefault(sym, price)
+        for child in (order.get("childOrderStrategies") or []):
+            scan(child)
+
+    for order in orders:
+        scan(order)
+    return out
+
+
+def _load_spread_structure() -> dict:
+    """Load the persisted per-account spread structure; {} on any problem so a bad file never blocks."""
+    try:
+        data = json.loads(_SPREAD_STRUCTURE_PATH.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (FileNotFoundError, OSError, ValueError, TypeError):
+        return {}
+
+
+def _save_spread_structure() -> None:
+    """Persist the spread structure (atomic temp+replace). Best-effort, never raises."""
+    try:
+        _SPREAD_STRUCTURE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        tmp = _SPREAD_STRUCTURE_PATH.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(spread_structure, default=str), encoding="utf-8")
+        os.replace(tmp, _SPREAD_STRUCTURE_PATH)
+    except OSError:
+        pass
+
+
+spread_structure: dict = _load_spread_structure()
+
+
+def _sync_spread_structure(client: SchwabMarketDataClient | None = None) -> dict:
+    """Pull opening transactions per account (180-day) and reconstruct the per-order spread/single
+    structure, MERGING onto the existing cache (a per-account failure keeps that account's prior
+    reconstruction). Slow (transaction pulls) — runs on demand (Refresh) + on the P&L sync, not on
+    every poll. Never raises."""
+    global spread_structure
+    accounts, _notes = discover_schwab_accounts(_bridge_config())
+    eligible = [a for a in accounts if str(getattr(a, "account_hash", "") or "").strip()]
+    if not eligible:
+        return {"accounts": 0, "errors": ["no eligible accounts yet"]}
+    client = client or SchwabMarketDataClient(settings.schwab)
+    now = datetime.now(timezone.utc)
+    start = now - timedelta(days=_SPREAD_STRUCTURE_LOOKBACK_DAYS)
+    merged: dict = dict(spread_structure)
+    errors: list[str] = []
+    updated = 0
+    for account in eligible:
+        try:
+            transactions = client.get_transactions(account.account_hash, start, now)
+        except (SchwabApiError, SchwabOAuthError) as exc:
+            errors.append(f"{getattr(account, 'id', '?')}: {str(exc)[:160]}")
+            continue
+        merged[account.id] = _reconstruct_orders_from_transactions(transactions)
+        updated += 1
+    spread_structure = merged
+    _save_spread_structure()
+    return {"accounts": updated, "errors": errors}
+
+
+def _tracked_broker_symbols() -> set[str]:
+    """Space-stripped option symbols this dashboard sent this session (from active_positions)."""
+    out: set[str] = set()
+    for p in active_positions.values():
+        for leg in p.get("legs", []):
+            sym = str(leg.get("broker_symbol", "")).replace(" ", "")
+            if sym:
+                out.add(sym)
+    return out
+
+
+def _normalize_option_position(account_id: str, raw: dict) -> dict | None:
+    """Raw Schwab position -> normalized dict for the spread pipeline (None for non-option/flat)."""
+    inst = raw.get("instrument") if isinstance(raw.get("instrument"), dict) else {}
+    if str((inst or {}).get("assetType", "")) != "OPTION":
+        return None
+    net = _pos_float(raw.get("longQuantity")) - _pos_float(raw.get("shortQuantity"))
+    if abs(net) < 1e-9:
+        return None
+    avg, mark, upnl = _position_avg_mark_pnl(raw)
+    broker_symbol = str((inst or {}).get("symbol", "") or "")
+    parsed = _parse_broker_option_symbol(broker_symbol)
+    underlying = parsed[0] if parsed else str((inst or {}).get("underlyingSymbol", "") or "")
+    return {
+        "account_id": account_id,
+        "symbol": broker_symbol,
+        "underlying": underlying,
+        "asset_type": "OPTION",
+        "quantity": net,
+        "average_price": avg,
+        "mark": mark,
+        "market_value": _pos_float(raw.get("marketValue")),
+        "unrealized_pnl": upnl,
+    }
+
+
+def _positionrow_from_dict(d: dict, tracked_syms: set[str]) -> PositionRow:
+    """Normalized position dict -> PositionRow (carries Target + spread flags for the panel)."""
+    sym = str(d.get("symbol", "") or "")
+    is_leg = bool(d.get("is_spread_leg"))
+    qty = float(d.get("quantity") or 0)
+    upnl = d.get("unrealized_pnl")
+    return PositionRow(
+        account_id=d["account_id"],
+        account_label=_account_alias(d["account_id"]),
+        symbol=sym,
+        underlying=d.get("underlying", ""),
+        qty=qty,
+        avg=d.get("average_price"),
+        mark=d.get("mark"),
+        unrealized_pnl=(round(float(upnl), 2) if upnl is not None else None),
+        direction="long" if qty > 0 else "short",
+        closeable=(not is_leg and qty != 0),
+        is_spread=is_leg,
+        source="schwab",
+        target_price=d.get("target_price"),
+        spread_id=d.get("spread_id"),
+        is_spread_leg=is_leg,
+        spread_aggregated=bool(d.get("spread_aggregated")),
+        tracked=(sym.replace(" ", "") in tracked_syms),
+    )
+
+
+def _all_positions_response(client: SchwabMarketDataClient, *, fresh: bool = False) -> PositionsResponse:
+    """Authoritative view: every OPTION position across enabled accounts. Applies the order#-based
+    spread reconstruction (so a shared strike splits into its real spreads/singles), pairs remaining
+    verticals, and attaches the resting closing-LIMIT Target price per symbol."""
+    if fresh or not spread_structure:
+        try:
+            _sync_spread_structure(client)
+        except Exception:  # noqa: BLE001 -- structure is an enhancement; never fail the panel
+            pass
     accounts, _notes = discover_schwab_accounts(_bridge_config())
     enabled = [a for a in accounts if getattr(a, "enabled", False) and str(getattr(a, "account_hash", "") or "")]
     errors: list[str] = []
-    collected: list[tuple[str, dict, str, str]] = []  # (account_id, raw, underlying, expiry)
+    now = datetime.now(timezone.utc)
+    frm = (now - timedelta(days=60)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    to = now.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    dicts_all: list[dict] = []
     for account in enabled:
         try:
             raws = client.get_positions(account.account_hash)
         except (SchwabApiError, SchwabOAuthError) as exc:
             errors.append(f"{getattr(account, 'id', '?')}: {str(exc)[:160]}")
             continue
-        for raw in raws:
-            inst = raw.get("instrument") if isinstance(raw.get("instrument"), dict) else {}
-            if str((inst or {}).get("assetType", "")) != "OPTION":
-                continue
-            broker_symbol = str((inst or {}).get("symbol", "") or "")
-            parsed = _parse_broker_option_symbol(broker_symbol)
-            underlying = parsed[0] if parsed else str((inst or {}).get("underlyingSymbol", "") or "")
-            expiry = parsed[1].isoformat() if parsed else ""
-            collected.append((account.id, raw, underlying, expiry))
-    leg_counts: dict[tuple[str, str, str], int] = {}
-    for aid, _raw, u, e in collected:
-        leg_counts[(aid, u, e)] = leg_counts.get((aid, u, e), 0) + 1
-    rows: list[PositionRow] = []
-    for aid, raw, u, e in collected:
-        net = _pos_float(raw.get("longQuantity")) - _pos_float(raw.get("shortQuantity"))
-        if net == 0:
+        dicts = [d for raw in raws if (d := _normalize_option_position(account.id, raw))]
+        if not dicts:
             continue
-        rows.append(_row_from_raw(aid, raw, is_spread=leg_counts.get((aid, u, e), 1) > 1))
+        structure = spread_structure.get(account.id)
+        if structure:
+            dicts = _apply_spread_structure(dicts, structure)
+        _mark_spread_legs(dicts)
+        try:
+            targets = _target_prices_for_orders(client.get_orders(account.account_hash, frm, to))
+        except (SchwabApiError, SchwabOAuthError):
+            targets = {}
+        for d in dicts:
+            d["target_price"] = targets.get(str(d.get("symbol") or "").replace(" ", ""))
+        dicts_all.extend(dicts)
+    tracked = _tracked_broker_symbols()
+    rows = [_positionrow_from_dict(d, tracked) for d in dicts_all]
     rows.sort(key=lambda r: (r.account_label, r.symbol))
     return PositionsResponse(
-        generated_at=datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+        generated_at=now.replace(microsecond=0).isoformat(),
         mode="all",
         positions=rows,
         note="Live from Schwab · options · all enabled accounts.",
@@ -492,11 +910,12 @@ def _tracked_positions_response(client: SchwabMarketDataClient | None = None) ->
                     inst = raw.get("instrument") if isinstance(raw.get("instrument"), dict) else {}
                     if str((inst or {}).get("symbol", "")).replace(" ", "") in leg_syms:
                         matched = True
-                        tot_upnl += _pos_float(raw.get("longOpenProfitLoss")) + _pos_float(raw.get("shortOpenProfitLoss"))
+                        leg_avg, _leg_mark, leg_upnl = _position_avg_mark_pnl(raw)
+                        tot_upnl += leg_upnl or 0.0
                         tot_mv += _pos_float(raw.get("marketValue"))
                         net_q += _pos_float(raw.get("longQuantity")) - _pos_float(raw.get("shortQuantity"))
                         if avg is None:
-                            avg = _pos_float(raw.get("averagePrice")) or None
+                            avg = leg_avg
                 if matched:
                     upnl = round(tot_upnl, 2)
                     mark = round(tot_mv / (net_q * 100), 2) if net_q else None
@@ -606,11 +1025,52 @@ def _close_contract_response(req: CloseContractRequest, order_client: SchwabMark
         )
         return ClosePositionResponse(status=result.status, symbol=req.broker_symbol, account_results=[result], notes=[])
 
+    # SAFE CLOSE: re-read authoritative state and BLOCK closing one leg of a vertical (flattening
+    # a single leg would leave a naked option). Best-effort — if the re-read fails, fall through.
+    try:
+        live_dicts = [
+            d for raw in order_client.get_positions(account_hash)
+            if (d := _normalize_option_position(req.account_id, raw))
+        ]
+        _mark_spread_legs(live_dicts)
+        compact = req.broker_symbol.replace(" ", "")
+        match = next((d for d in live_dicts if str(d.get("symbol") or "").replace(" ", "") == compact), None)
+        if match and match.get("is_spread_leg"):
+            result = ClosePositionResult(
+                account_id=req.account_id,
+                account_label=label,
+                status="blocked",
+                reasons=["spread_leg_close_blocked"],
+                order_payload=payload,
+            )
+            return ClosePositionResponse(
+                status="blocked",
+                symbol=req.broker_symbol,
+                account_results=[result],
+                notes=["This is one leg of a spread; closing it alone would leave a naked option. Close the whole structure in Schwab/thinkorswim."],
+            )
+    except Exception:  # noqa: BLE001 -- spread re-read is best-effort; fall through to the close
+        pass
+
+    # Cancel ALL resting orders for this symbol so they can't fire after we flatten. Union the
+    # audit-derived ids (orders this scanner sent) with a live get_orders scan (OCO-aware, so OTOCO
+    # brackets and manual orders are caught too).
+    cancel_ids: list[str] = list(_open_order_ids_for_symbol(req.account_id, req.broker_symbol))
+    try:
+        now = datetime.now(timezone.utc)
+        frm = (now - timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        to = now.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        cancel_ids += [
+            str(i)
+            for i in _cancelable_order_ids_for_symbol(order_client.get_orders(account_hash, frm, to), req.broker_symbol)
+        ]
+    except Exception:  # noqa: BLE001 -- the audit-derived ids + MARKET close still flatten it
+        pass
     canceled: list[str] = []
-    for order_id in _open_order_ids_for_symbol(req.account_id, req.broker_symbol):
+    for order_id in dict.fromkeys(cancel_ids):
         try:
-            order_client.cancel_order(account_hash, order_id)
-            canceled.append(order_id)
+            order_client.cancel_order(account_hash, str(order_id))
+            canceled.append(str(order_id))
         except (SchwabApiError, SchwabOAuthError):
             pass  # best-effort; the MARKET close still flattens the contract
     try:
@@ -638,12 +1098,16 @@ def _close_contract_response(req: CloseContractRequest, order_client: SchwabMark
 
 
 @app.get("/positions", response_model=PositionsResponse)
-async def positions(source: str = Query("tracked", pattern="^(tracked|all)$")) -> PositionsResponse:
+async def positions(
+    source: str = Query("tracked", pattern="^(tracked|all)$"),
+    fresh: bool = Query(False),
+) -> PositionsResponse:
     """Open positions. source=tracked -> only this dashboard's live sends this session;
-    source=all -> every option position across enabled accounts (authoritative Schwab pull)."""
+    source=all -> every option position across enabled accounts (authoritative Schwab pull).
+    fresh=true (Refresh button) rebuilds the slow order#-based spread structure on demand."""
     if source == "all":
         client = SchwabMarketDataClient(settings.schwab)
-        return await asyncio.to_thread(_all_positions_response, client)
+        return await asyncio.to_thread(_all_positions_response, client, fresh=fresh)
     client = SchwabMarketDataClient(settings.schwab) if active_positions else None
     return await asyncio.to_thread(_tracked_positions_response, client)
 
