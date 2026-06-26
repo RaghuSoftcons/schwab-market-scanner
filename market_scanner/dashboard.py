@@ -131,7 +131,7 @@ _DASHBOARD_TEMPLATE = """<!doctype html>
     .top-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
     .layout {
       display: grid;
-      grid-template-columns: minmax(500px, 0.92fr) minmax(460px, 1.08fr);
+      grid-template-columns: minmax(540px, 1.06fr) minmax(420px, 0.94fr);
       gap: 12px;
       align-items: start;
     }
@@ -407,6 +407,51 @@ _DASHBOARD_TEMPLATE = """<!doctype html>
           <div class="kpi"><div class="label">Proposals</div><div class="value" id="kpi-proposals">...</div></div>
         </div>
 
+        <section class="panel">
+          <div class="panel-head">
+            <div class="panel-title">Top Candidates <span class="tiny" style="font-weight:400;">gap-scan signals · this session</span></div>
+            <div class="candidate-actions">
+              <div class="muted" id="candidate-count">0 shown</div>
+              <button class="ghost" id="refresh-prices-button" data-run-scan-button onclick="runScan(false)">Refresh Prices</button>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table class="signals-table">
+              <thead>
+                <tr>
+                  <th style="width: 17%;">Symbol</th>
+                  <th style="width: 14%;">Bias</th>
+                  <th style="width: 13%;">Price</th>
+                  <th style="width: 12%;">Gap</th>
+                  <th style="width: 16%;">PM Vol</th>
+                  <th style="width: 18%;">Build</th>
+                  <th>Read</th>
+                </tr>
+              </thead>
+              <tbody id="candidate-rows">
+                <tr><td colspan="7" class="muted">Loading...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <div class="panel-title">Open Positions <span class="muted tiny" id="positions-note">dashboard-tracked · saved across restarts</span></div>
+            <div class="panel-actions">
+              <span class="segmented" id="positions-mode" role="group" aria-label="Positions source">
+                <button class="segment-button active" type="button" data-pos-mode="tracked" onclick="setPositionsMode('tracked')">Tracked</button>
+                <button class="segment-button" type="button" data-pos-mode="all" onclick="setPositionsMode('all')">All</button>
+              </span>
+              <span class="muted" id="positions-status">--</span>
+              <button class="ghost" id="positions-refresh-button" onclick="loadPositions(true)">Refresh</button>
+            </div>
+          </div>
+          <div class="panel-body" id="positions-body">
+            <div class="muted">Loading positions...</div>
+          </div>
+        </section>
+
         <section class="panel" id="platform-panel">
           <div class="panel-head">
             <div class="panel-title">Platform</div>
@@ -457,51 +502,6 @@ _DASHBOARD_TEMPLATE = """<!doctype html>
             <div class="badges" id="state-badges"></div>
           </div>
           <div class="state-summary" id="state-summary" title="">Loading scanner state...</div>
-        </section>
-
-        <section class="panel">
-          <div class="panel-head">
-            <div class="panel-title">Top Candidates <span class="tiny" style="font-weight:400;">gap-scan signals · this session</span></div>
-            <div class="candidate-actions">
-              <div class="muted" id="candidate-count">0 shown</div>
-              <button class="ghost" id="refresh-prices-button" data-run-scan-button onclick="runScan(false)">Refresh Prices</button>
-            </div>
-          </div>
-          <div class="table-wrap">
-            <table class="signals-table">
-              <thead>
-                <tr>
-                  <th style="width: 17%;">Symbol</th>
-                  <th style="width: 14%;">Bias</th>
-                  <th style="width: 13%;">Price</th>
-                  <th style="width: 12%;">Gap</th>
-                  <th style="width: 16%;">PM Vol</th>
-                  <th style="width: 18%;">Build</th>
-                  <th>Read</th>
-                </tr>
-              </thead>
-              <tbody id="candidate-rows">
-                <tr><td colspan="7" class="muted">Loading...</td></tr>
-              </tbody>
-            </table>
-          </div>
-        </section>
-
-        <section class="panel">
-          <div class="panel-head">
-            <div class="panel-title">Open Positions <span class="muted tiny" id="positions-note">dashboard-tracked · saved across restarts</span></div>
-            <div class="panel-actions">
-              <span class="segmented" id="positions-mode" role="group" aria-label="Positions source">
-                <button class="segment-button active" type="button" data-pos-mode="tracked" onclick="setPositionsMode('tracked')">Tracked</button>
-                <button class="segment-button" type="button" data-pos-mode="all" onclick="setPositionsMode('all')">All</button>
-              </span>
-              <span class="muted" id="positions-status">--</span>
-              <button class="ghost" id="positions-refresh-button" onclick="loadPositions(true)">Refresh</button>
-            </div>
-          </div>
-          <div class="panel-body" id="positions-body">
-            <div class="muted">Loading positions...</div>
-          </div>
         </section>
 
         <section class="panel">
