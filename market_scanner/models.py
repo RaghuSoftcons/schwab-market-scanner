@@ -148,6 +148,7 @@ class PositionRow(BaseModel):
     spread_id: str | None = None        # shared id for the two legs of one vertical (combine in UI)
     is_spread_leg: bool = False         # one leg of a vertical -> Close blocked (naked-option guard)
     spread_aggregated: bool = False     # Schwab blended this strike across spreads (can't split)
+    spread_kind: str = ""               # vertical | calendar | butterfly | broken_wing | condor | iron_condor | iron_fly
     tracked: bool = False               # symbol was sent by this dashboard this session
 
 

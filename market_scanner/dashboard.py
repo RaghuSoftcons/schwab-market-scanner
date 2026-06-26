@@ -941,32 +941,85 @@ function formatOptionLabel(sym) {
   return `${under} ${formatExpiry(exp)} ${strikeStr} ${right}`;
 }
 // Group the two legs of a vertical (shared spread_id) into one net line per the order#-reconstruction.
+function parseOsi(sym) {
+  const c = String(sym || "").replace(/ /g, "");
+  if (c.length < 15) return { expiry: "", right: "", strike: NaN };
+  return { expiry: c.slice(-15, -9), right: c.slice(-9, -8), strike: parseInt(c.slice(-8), 10) / 1000 };
+}
+// Combine the legs of a multi-leg structure (shared spread_id) into ONE net line, labeled by kind:
+// vertical / calendar / diagonal / butterfly / broken-wing fly / condor / iron condor / iron fly.
 function combineSpreadRows(positions) {
-  const groups = {};
-  const out = [];
+  const singles = [];
+  const groups = new Map();
   for (const p of positions) {
-    if (p.spread_id) (groups[p.account_id + "|" + p.spread_id] ||= []).push(p);
-    else out.push(p);
+    if (!p.is_spread_leg || !p.spread_id) { singles.push(p); continue; }
+    const key = p.account_id + "|" + p.spread_id;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(Object.assign({ _osi: parseOsi(p.symbol) }, p));
   }
-  for (const key in groups) {
-    const legs = groups[key];
-    if (legs.length !== 2) { out.push(...legs); continue; }
-    const long = legs.find(l => Number(l.qty) > 0) || legs[0];
-    const short = legs.find(l => Number(l.qty) < 0) || legs[1];
-    const netDebit = (long.avg != null && short.avg != null) ? (long.avg - short.avg) : null;
-    const netMark = (long.mark != null && short.mark != null) ? (long.mark - short.mark) : null;
-    out.push({
-      account_id: long.account_id, account_label: long.account_label, underlying: long.underlying,
-      _display: `${formatOptionLabel(long.symbol)} / ${formatOptionLabel(short.symbol)}`,
-      qty: Math.abs(Number(long.qty)),
-      avg: netDebit, mark: netMark,
-      unrealized_pnl: legs.reduce((s, l) => s + (Number(l.unrealized_pnl) || 0), 0),
-      target_price: long.target_price ?? short.target_price ?? null,
-      stop_price: long.stop_price ?? short.stop_price ?? null,
-      is_spread: true, closeable: false,
+  const combined = [];
+  groups.forEach((legs) => {
+    if (legs.length === 1) { combined.push(legs[0]); return; }
+    let netUpl = 0, netAvg = 0, netMark = 0, anyUpl = false;
+    legs.forEach((l) => {
+      const q = Number(l.qty || 0), sgn = q >= 0 ? 1 : -1, aq = Math.abs(q);
+      if (l.unrealized_pnl != null) { netUpl += Number(l.unrealized_pnl); anyUpl = true; }
+      if (l.avg != null) netAvg += sgn * Number(l.avg) * aq;
+      if (l.mark != null) netMark += sgn * Number(l.mark) * aq;
     });
-  }
-  return out;
+    // Structures = smallest leg magnitude (fly body 2N + wings N -> N; condor/IC/vertical N -> N).
+    let spreadQty = Math.min(...legs.map((l) => Math.abs(Number(l.qty)) || Infinity));
+    if (!isFinite(spreadQty) || spreadQty <= 0) spreadQty = 1;
+    const under = legs[0].underlying || "";
+    const right = legs[0]._osi.right || "";
+    const expiries = [...new Set(legs.map((l) => l._osi.expiry))];
+    const kinds = new Set(legs.map((l) => String(l.spread_kind || "")));
+    const longLeg = legs.find((l) => Number(l.qty) > 0);
+    const shortLeg = legs.find((l) => Number(l.qty) < 0);
+    const sortStrikes = (arr) => arr.slice().sort((a, b) => Number(a) - Number(b));
+    let label, kind;
+    if (kinds.has("iron_condor") || kinds.has("iron_fly")) {
+      kind = kinds.has("iron_fly") ? "iron fly" : "iron condor";
+      const puts = sortStrikes(legs.filter((l) => l._osi.right === "P").map((l) => l._osi.strike));
+      const calls = sortStrikes(legs.filter((l) => l._osi.right === "C").map((l) => l._osi.strike));
+      label = `${under} ${formatExpiry(legs[0]._osi.expiry)} P ${puts.join("/")} + C ${calls.join("/")}`;
+    } else if (kinds.has("condor")) {
+      kind = "condor";
+      label = `${under} ${formatExpiry(legs[0]._osi.expiry)} ${sortStrikes(legs.map((l) => l._osi.strike)).join("/")} ${right}`;
+    } else if (kinds.has("butterfly") || kinds.has("broken_wing")) {
+      kind = kinds.has("broken_wing") ? "broken-wing fly" : "butterfly";
+      label = `${under} ${formatExpiry(legs[0]._osi.expiry)} ${sortStrikes(legs.map((l) => l._osi.strike)).join("/")} ${right}`;
+    } else if (expiries.length > 1 && longLeg && shortLeg) {
+      kind = (longLeg._osi.strike === shortLeg._osi.strike) ? "calendar" : "diagonal";
+      const strikePart = (kind === "calendar")
+        ? `${shortLeg._osi.strike}`
+        : `${shortLeg._osi.strike}/${longLeg._osi.strike}`;
+      label = `${under} ${formatExpiry(shortLeg._osi.expiry)} / ${formatExpiry(longLeg._osi.expiry)} ${strikePart} ${right}`;
+    } else {
+      const exp = legs[0]._osi.expiry || "";
+      const longs = legs.filter((l) => Number(l.qty) > 0).map((l) => l._osi.strike);
+      const shorts = legs.filter((l) => Number(l.qty) < 0).map((l) => l._osi.strike);
+      kind = "vertical";
+      label = `${under} ${formatExpiry(exp)} ${longs.join(",")}/${shorts.join(",")} ${right}`;
+    }
+    combined.push({
+      account_id: legs[0].account_id,
+      account_label: legs[0].account_label,
+      underlying: under,
+      _display: label,
+      spread_kind: kind,
+      target_price: legs[0].target_price,
+      stop_price: legs[0].stop_price,
+      qty: spreadQty,
+      avg: netAvg / spreadQty,
+      mark: netMark / spreadQty,
+      unrealized_pnl: anyUpl ? netUpl : null,
+      tracked: legs.some((l) => l.tracked),
+      is_spread: true,
+      closeable: false,
+    });
+  });
+  return singles.concat(combined);
 }
 
 const POSITION_COLUMNS = [
@@ -1032,8 +1085,9 @@ function renderPositions() {
     const qtyStr = (Number(pos.qty) > 0 ? "+" : "") + Number(pos.qty);
     const upnl = (pos.unrealized_pnl == null) ? "--" : `<span class="${pnlClass(pos.unrealized_pnl)}">${moneySigned(pos.unrealized_pnl)}</span>`;
     const statusId = `pos-status-${esc(pos.account_id)}-${esc(pos.symbol)}`;
+    const spreadLabel = pos.spread_aggregated ? "spread (agg)" : (pos.spread_kind || "spread");
     const action = (pos.is_spread || pos.is_spread_leg)
-      ? `<span class="muted tiny">${pos.spread_aggregated ? "spread (agg)" : "spread"}</span>`
+      ? `<span class="muted tiny">${esc(spreadLabel)}</span>`
       : `<button class="danger small" onclick="closePosition('${sym}','${acct}',${Math.abs(Number(pos.qty)) || 1},${isLong},'${statusId}')">Close</button>`;
     const symLabel = pos._display || formatOptionLabel(pos.symbol);
     const tgtCell = pos.target_price == null ? "--" : Number(pos.target_price).toFixed(2);

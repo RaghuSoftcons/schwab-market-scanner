@@ -79,6 +79,52 @@ def test_standalone_long_not_marked_as_spread() -> None:
     assert positions[0]["is_spread_leg"] is False
 
 
+def _call(under, strike):
+    return f"{under:<6}260717C{int(round(strike * 1000)):08d}"
+
+
+def test_butterfly_call_tagged_as_one_structure() -> None:
+    # Long 1 / short 2 / long 1, equidistant wings -> butterfly; all 3 legs share one spread_id.
+    positions = [
+        {"underlying": "DE", "symbol": _call("DE", 650), "quantity": 1},
+        {"underlying": "DE", "symbol": _call("DE", 655), "quantity": -2},
+        {"underlying": "DE", "symbol": _call("DE", 660), "quantity": 1},
+    ]
+    _mark_spread_legs(positions)
+    assert all(p["is_spread_leg"] for p in positions)
+    ids = {p["spread_id"] for p in positions}
+    assert len(ids) == 1
+    assert all(p["spread_kind"] == "butterfly" for p in positions)
+    assert not any(p.get("spread_aggregated") for p in positions)  # NOT mis-flagged as aggregated
+
+
+def test_broken_wing_fly_tagged() -> None:
+    positions = [
+        {"underlying": "DE", "symbol": _call("DE", 650), "quantity": 1},
+        {"underlying": "DE", "symbol": _call("DE", 655), "quantity": -2},
+        {"underlying": "DE", "symbol": _call("DE", 665), "quantity": 1},  # wider high wing
+    ]
+    _mark_spread_legs(positions)
+    assert {p["spread_id"] for p in positions} == {p["spread_id"] for p in positions if p["spread_id"]}
+    assert all(p["spread_kind"] == "broken_wing" for p in positions)
+
+
+def test_iron_condor_tagged() -> None:
+    def put(strike):
+        return f"{'IWM':<6}260717P{int(round(strike * 1000)):08d}"
+
+    positions = [
+        {"underlying": "IWM", "symbol": put(190), "quantity": 1},
+        {"underlying": "IWM", "symbol": put(195), "quantity": -1},
+        {"underlying": "IWM", "symbol": _call("IWM", 210), "quantity": -1},
+        {"underlying": "IWM", "symbol": _call("IWM", 215), "quantity": 1},
+    ]
+    _mark_spread_legs(positions)
+    assert all(p["is_spread_leg"] for p in positions)
+    assert len({p["spread_id"] for p in positions}) == 1
+    assert all(p["spread_kind"] == "iron_condor" for p in positions)
+
+
 def test_reconstruct_orders_from_transactions() -> None:
     txns = [
         {"type": "TRADE", "orderId": 111, "transferItems": [

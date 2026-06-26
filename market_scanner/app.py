@@ -479,22 +479,157 @@ def _parse_osi(symbol: str) -> tuple[str, str, float | None]:
     return expiry, right, strike
 
 
+def _tag_iron_condors(positions: list) -> None:
+    """Tag an IRON CONDOR / IRON FLY: a PUT vertical + a CALL vertical at the same underlying/expiry
+    with equal quantity (4 legs spanning BOTH rights). Iron fly = the two SHORT strikes are equal.
+    Conservative: only fires on exactly one clean long+short put pair AND one clean long+short call
+    pair of equal magnitude. Mutates in place."""
+    from collections import defaultdict
+
+    groups: dict = defaultdict(list)
+    for pos in positions:
+        if pos.get("from_structure") or pos.get("is_spread_leg"):
+            continue
+        expiry, right, strike = _parse_osi(pos.get("symbol", ""))
+        if strike is None or right not in ("C", "P"):
+            continue
+        groups[(pos.get("underlying"), expiry)].append((right, strike, pos))
+
+    def _vertical(pair):
+        (s_a, p_a), (s_b, p_b) = pair
+        qa = p_a.get("quantity") or 0
+        qb = p_b.get("quantity") or 0
+        if qa == 0 or qb == 0 or abs(abs(qa) - abs(qb)) > 1e-9 or (qa > 0) == (qb > 0):
+            return None
+        return {
+            "qty": abs(qa),
+            "long": p_a if qa > 0 else p_b,
+            "short": p_b if qa > 0 else p_a,
+            "short_strike": s_b if qa > 0 else s_a,
+        }
+
+    for (underlying, expiry), items in groups.items():
+        puts = [(s, p) for r, s, p in items if r == "P"]
+        calls = [(s, p) for r, s, p in items if r == "C"]
+        if len(puts) != 2 or len(calls) != 2:
+            continue
+        pv, cv = _vertical(puts), _vertical(calls)
+        if not pv or not cv or abs(pv["qty"] - cv["qty"]) > 1e-9:
+            continue
+        kind = "iron_fly" if abs(pv["short_strike"] - cv["short_strike"]) < 1e-9 else "iron_condor"
+        spread_id = f"{underlying}|IC|{expiry}|{pv['short_strike']:g}-{cv['short_strike']:g}"
+        for leg in (pv["long"], pv["short"], cv["long"], cv["short"]):
+            leg["is_spread_leg"] = True
+            leg["spread_id"] = spread_id
+            leg["spread_kind"] = kind
+
+
+def _tag_condors(positions: list) -> None:
+    """Tag a CONDOR (same underlying/expiry/right, 4 legs): two outer wings of one sign + two inner
+    legs of the opposite sign, all equal magnitude N at strikes K1<K2<K3<K4. Conservative; only
+    clean unclaimed single-position strikes. Mutates in place."""
+    from collections import defaultdict
+
+    groups: dict = defaultdict(dict)
+    for pos in positions:
+        if pos.get("from_structure") or pos.get("is_spread_leg"):
+            continue
+        expiry, right, strike = _parse_osi(pos.get("symbol", ""))
+        if strike is None:
+            continue
+        groups[(pos.get("underlying"), expiry, right)].setdefault(strike, []).append(pos)
+    for (underlying, expiry, right), by_strike in groups.items():
+        avail = sorted(s for s, ps in by_strike.items() if len(ps) == 1 and not ps[0].get("is_spread_leg"))
+        used: set = set()
+        for a in range(len(avail)):
+            k1 = avail[a]
+            if k1 in used:
+                continue
+            q1 = by_strike[k1][0].get("quantity") or 0
+            if q1 == 0:
+                continue
+            for d in range(len(avail) - 1, a + 2, -1):  # k4 leaves room for two inner strikes
+                k4 = avail[d]
+                if k4 in used or abs((by_strike[k4][0].get("quantity") or 0) - q1) > 1e-9:
+                    continue
+                inner = [s for s in avail if k1 < s < k4 and s not in used
+                         and abs((by_strike[s][0].get("quantity") or 0) + q1) < 1e-9]
+                if len(inner) >= 2:
+                    k2, k3 = inner[0], inner[-1]
+                    spread_id = f"{underlying}|COND|{right}|{k1:g}-{k2:g}-{k3:g}-{k4:g}"
+                    for s in (k1, k2, k3, k4):
+                        leg = by_strike[s][0]
+                        leg["is_spread_leg"] = True
+                        leg["spread_id"] = spread_id
+                        leg["spread_kind"] = "condor"
+                    used.update([k1, k2, k3, k4])
+                    break
+
+
 def _mark_spread_legs(positions: list) -> None:
-    """Tag the legs of a vertical (same account/underlying/expiry/right) with a shared `spread_id`.
-    Pairs each SHORT with its NEAREST-strike LONG; equal qty -> combinable spread_id, qty mismatch
-    -> spread_aggregated (Schwab blended the strike across spreads, can't split). Standalone longs /
-    naked shorts stay singles. Closing a paired leg alone would leave a naked option (blocked).
-    Skips rows already grouped by the order#-based reconstruction. Mutates in place."""
+    """Tag multi-leg structures with a shared `spread_id` (+ spread_kind) so they combine into one
+    line and aren't mis-flagged as aggregated. Claims larger / cross-right structures FIRST (iron
+    condor/fly, condor, butterfly) so their legs aren't split into verticals, then pairs the rest:
+    verticals (nearest short↔long, equal-qty), then calendars (same strike, different expiry). A
+    qty-mismatch vertical leg is flagged spread_aggregated (Schwab blended the strike). Skips rows
+    already grouped by the order#-based reconstruction. Mutates in place."""
     for pos in positions:
         if pos.get("from_structure"):
-            continue
+            continue  # already grouped by the order#-based reconstruction; don't re-pair
         pos["is_spread_leg"] = False
         pos.pop("spread_id", None)
         pos.pop("spread_aggregated", None)
+        pos.pop("spread_kind", None)
+
+    # Larger / cross-right structures BEFORE the 2-leg vertical pairing: 4-leg (iron condor/fly,
+    # condor) -> 3-leg butterfly.
+    _tag_iron_condors(positions)
+    _tag_condors(positions)
+
+    # Butterfly pass: claim a 1:2:1 (N:2N:N) fly. Body = 2N at mid, wings = N at a low + a high strike
+    # of the OPPOSITE sign. EQUIDISTANT wings -> "butterfly"; otherwise "broken_wing". One spread_id
+    # for all three legs. Only unclaimed single-position strikes.
+    fly_by_group: dict = {}
+    for pos in positions:
+        if pos.get("from_structure") or pos.get("is_spread_leg"):
+            continue
+        expiry, right, strike = _parse_osi(pos.get("symbol", ""))
+        if strike is None:
+            continue
+        fly_by_group.setdefault((pos.get("underlying"), expiry, right), {}).setdefault(strike, []).append(pos)
+    for (underlying, expiry, right), by_strike in fly_by_group.items():
+        strikes = sorted(s for s, ps in by_strike.items() if len(ps) == 1)
+        claimed: set = set()
+        for mid in strikes:
+            if mid in claimed:
+                continue
+            body = by_strike[mid][0]
+            body_qty = body.get("quantity") or 0
+            if body_qty == 0 or abs(body_qty) % 2 != 0:
+                continue  # body must be an even quantity (2N)
+            wing_qty = -body_qty / 2  # opposite sign, half the magnitude
+            lows = [s for s in strikes if s < mid and s not in claimed
+                    and abs((by_strike[s][0].get("quantity") or 0) - wing_qty) < 1e-9]
+            highs = [s for s in strikes if s > mid and s not in claimed
+                     and abs((by_strike[s][0].get("quantity") or 0) - wing_qty) < 1e-9]
+            if not lows or not highs:
+                continue
+            chosen = next(((lw, 2 * mid - lw) for lw in lows if (2 * mid - lw) in highs), None)
+            kind = "butterfly"
+            if chosen is None:
+                chosen, kind = (lows[-1], highs[0]), "broken_wing"  # nearest low + nearest high
+            low, high = chosen
+            spread_id = f"{underlying}|FLY|{right}|{low:g}-{mid:g}-{high:g}"
+            for leg in (by_strike[low][0], body, by_strike[high][0]):
+                leg["is_spread_leg"] = True
+                leg["spread_id"] = spread_id
+                leg["spread_kind"] = kind
+            claimed.update([low, mid, high])
+
     groups: dict = {}
     for pos in positions:
-        if pos.get("from_structure"):
-            continue
+        if pos.get("from_structure") or pos.get("is_spread_leg"):
+            continue  # already claimed by a multi-leg pass above
         expiry, right, strike = _parse_osi(pos.get("symbol", ""))
         if strike is None:
             continue
@@ -526,6 +661,37 @@ def _mark_spread_legs(positions: list) -> None:
             else:
                 short_pos["spread_aggregated"] = True
                 long_pos["spread_aggregated"] = True
+
+    # Calendar pass: pair a SHORT with a LONG of the SAME underlying/right/STRIKE but a DIFFERENT
+    # expiry. Only legs the vertical pass left unpaired, only a clean 1:1 quantity match.
+    cal_groups: dict = {}
+    for pos in positions:
+        if pos.get("from_structure") or pos.get("is_spread_leg"):
+            continue
+        expiry, right, strike = _parse_osi(pos.get("symbol", ""))
+        if strike is None:
+            continue
+        cal_groups.setdefault((pos.get("underlying"), right, strike), []).append((expiry, pos))
+    for (underlying, right, strike), items in cal_groups.items():
+        longs = [(e, p) for e, p in items if (p.get("quantity") or 0) > 0]
+        used = set()
+        for short_exp, short_pos in [(e, p) for e, p in items if (p.get("quantity") or 0) < 0]:
+            short_qty = abs(short_pos.get("quantity") or 0)
+            match_i = next(
+                (i for i, (long_exp, long_pos) in enumerate(longs)
+                 if i not in used and long_exp != short_exp
+                 and abs(abs(long_pos.get("quantity") or 0) - short_qty) < 1e-9),
+                None,
+            )
+            if match_i is None:
+                continue
+            used.add(match_i)
+            long_exp, long_pos = longs[match_i]
+            spread_id = f"{underlying}|CAL|{right}|{strike:g}|{short_exp}-{long_exp}"
+            for leg in (short_pos, long_pos):
+                leg["is_spread_leg"] = True
+                leg["spread_id"] = spread_id
+                leg["spread_kind"] = "calendar"
 
 
 def _reconstruct_orders_from_transactions(transactions) -> dict:
@@ -934,6 +1100,7 @@ def _positionrow_from_dict(d: dict, tracked_syms: set[str]) -> PositionRow:
         spread_id=d.get("spread_id"),
         is_spread_leg=is_leg,
         spread_aggregated=bool(d.get("spread_aggregated")),
+        spread_kind=str(d.get("spread_kind") or ""),
         tracked=(sym.replace(" ", "") in tracked_syms),
     )
 
