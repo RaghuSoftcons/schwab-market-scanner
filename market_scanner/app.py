@@ -203,14 +203,12 @@ def _resolve_account_alias(account_id: str) -> str | None:
 
 
 def _account_alias(account_id: str) -> str:
-    """Display label as 'number (alias)' (Unified-Platform format), e.g. '66502618 (Individual)'.
-    Falls back to the bare number, then the raw id, when no alias is known."""
-    digits = "".join(ch for ch in str(account_id) if ch.isdigit())
+    """Display label = the friendly ALIAS only (e.g. 'Individual', 'Grow Fly'). Falls back to the
+    bare account number, then the raw id, when no alias is known. (Raghu: drop the number prefix.)"""
     alias = _resolve_account_alias(account_id)
-    if alias and digits:
-        return f"{digits} ({alias})"
     if alias:
         return alias
+    digits = "".join(ch for ch in str(account_id) if ch.isdigit())
     return digits or str(account_id)
 
 
