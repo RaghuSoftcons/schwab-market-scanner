@@ -4,6 +4,7 @@ import asyncio
 import json
 import math
 import re
+import time as _time  # the bare name `time` is datetime.time (imported below); _time is the stdlib module
 from contextlib import asynccontextmanager
 from datetime import date as date_type
 from datetime import datetime, time, timedelta, timezone
@@ -684,6 +685,79 @@ def _cancelable_order_ids_for_symbol(orders: list, osi_symbol: str) -> list:
     return list(dict.fromkeys(ids))
 
 
+def _resting_close_order_ids(orders: list, symbols) -> list:
+    """Outermost still-cancelable order ids that hold a resting CLOSING leg on any of `symbols`.
+
+    Live-discovers the bracket however it was created — a separately-sent OCO (top level) OR an OTOCO
+    entry's child OCO (nested under a filled entry) — so a close never races a bracket a stored id
+    missed (the oversold-reject cause). Returns the cancelable order CLOSEST to the root in each
+    branch (cancelling it cancels its children)."""
+    wanted = {str(s or "").replace(" ", "") for s in symbols if s}
+    closing = {"SELL_TO_CLOSE", "BUY_TO_CLOSE"}
+
+    def references_close(order: dict) -> bool:
+        for leg in (order.get("orderLegCollection") or []):
+            sym = str((leg.get("instrument") or {}).get("symbol", "")).replace(" ", "")
+            if sym in wanted and str(leg.get("instruction", "")).upper() in closing:
+                return True
+        return any(references_close(c) for c in (order.get("childOrderStrategies") or []) if isinstance(c, dict))
+
+    found: list = []
+
+    def walk(order) -> None:
+        if not isinstance(order, dict):
+            return
+        status = str(order.get("status", "")).upper()
+        cancelable = order.get("cancelable", status not in _TERMINAL_ORDER_STATUSES)
+        oid = order.get("orderId")
+        if cancelable and oid is not None and references_close(order):
+            found.append(oid)
+            return  # cancelling this cancels its children -- don't descend further
+        for child in (order.get("childOrderStrategies") or []):
+            walk(child)
+
+    for order in orders:
+        walk(order)
+    return list(dict.fromkeys(found))
+
+
+def _confirm_orders_cleared(
+    order_client, account_hash, order_ids, frm, to, *, timeout_s: float = 2.0, step_s: float = 0.3
+) -> bool:
+    """Poll the order book until none of `order_ids` are still working (or `timeout_s` elapses).
+
+    Lets a MARKET close wait for a just-cancelled bracket to actually leave the book, so Schwab can't
+    see two sells against one contract ('oversold' reject). Returns True once all are cleared. Bounded;
+    uses time.monotonic. Runs in a worker thread (the close path is asyncio.to_thread'd)."""
+    if not order_ids:
+        return True
+    targets = {str(o) for o in order_ids}
+    deadline = _time.monotonic() + max(timeout_s, 0.0)
+    while True:
+        try:
+            orders = order_client.get_orders(account_hash, frm, to)
+        except Exception:  # noqa: BLE001 -- can't read; let the close proceed rather than hang
+            return False
+        still_working: set = set()
+
+        def scan(order):
+            if not isinstance(order, dict):
+                return
+            oid = str(order.get("orderId") or "")
+            if oid in targets and str(order.get("status", "")).upper() not in _TERMINAL_ORDER_STATUSES:
+                still_working.add(oid)
+            for child in (order.get("childOrderStrategies") or []):
+                scan(child)
+
+        for order in orders:
+            scan(order)
+        if not still_working:
+            return True
+        if _time.monotonic() >= deadline:
+            return False
+        _time.sleep(step_s)
+
+
 def _target_prices_for_orders(orders: list) -> dict:
     """Map space-stripped OSI symbol -> price of a resting CLOSING limit order (the profit target).
     Skips stop legs and terminal orders; reads OCO/TRIGGER children. Powers the Target column."""
@@ -1115,27 +1189,31 @@ def _close_contract_response(req: CloseContractRequest, order_client: SchwabMark
     except Exception:  # noqa: BLE001 -- spread re-read is best-effort; fall through to the close
         pass
 
-    # Cancel ALL resting orders for this symbol so they can't fire after we flatten. Union the
-    # audit-derived ids (orders this scanner sent) with a live get_orders scan (OCO-aware, so OTOCO
-    # brackets and manual orders are caught too).
-    cancel_ids: list[str] = list(_open_order_ids_for_symbol(req.account_id, req.broker_symbol))
+    # Cancel the resting bracket BEFORE flattening, then CONFIRM it left the book so the MARKET close
+    # can't race a still-resting sell into a Schwab "oversold" reject (the DIA bug). Live-discover the
+    # outermost cancelable closing order via get_orders (catches an OTOCO entry's nested child OCO and
+    # replaced brackets that a stored id would miss); union the audit-derived ids as a fallback.
+    now = datetime.now(timezone.utc)
+    frm = (now - timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    to = now.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    resting_ids: list = []
     try:
-        now = datetime.now(timezone.utc)
-        frm = (now - timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
-        to = now.strftime("%Y-%m-%dT%H:%M:%S.000Z")
-        cancel_ids += [
-            str(i)
-            for i in _cancelable_order_ids_for_symbol(order_client.get_orders(account_hash, frm, to), req.broker_symbol)
-        ]
-    except Exception:  # noqa: BLE001 -- the audit-derived ids + MARKET close still flatten it
+        resting_ids = _resting_close_order_ids(order_client.get_orders(account_hash, frm, to), [req.broker_symbol])
+    except Exception:  # noqa: BLE001 -- fall back to the audit ids; the MARKET close still flattens it
         pass
+    cancel_ids = list(dict.fromkeys(
+        [str(i) for i in resting_ids] + list(_open_order_ids_for_symbol(req.account_id, req.broker_symbol))
+    ))
     canceled: list[str] = []
-    for order_id in dict.fromkeys(cancel_ids):
+    for order_id in cancel_ids:
         try:
             order_client.cancel_order(account_hash, str(order_id))
             canceled.append(str(order_id))
         except (SchwabApiError, SchwabOAuthError):
-            pass  # best-effort; the MARKET close still flattens the contract
+            pass  # best-effort; the confirm-poll + MARKET close still handle it
+    # Wait (bounded) for the cancelled bracket to actually clear the book before the MARKET close.
+    if resting_ids:
+        _confirm_orders_cleared(order_client, account_hash, resting_ids, frm, to)
     try:
         placed = order_client.place_order(account_hash, payload)
         result = ClosePositionResult(
@@ -1147,17 +1225,29 @@ def _close_contract_response(req: CloseContractRequest, order_client: SchwabMark
             canceled_order_ids=canceled,
             order_payload=payload,
         )
+        # Untrack ONLY on a clean close — a rejected close must keep the position tracked (visible +
+        # retryable), never leave it naked and invisible.
         _drop_tracked_contract(req.account_id, req.broker_symbol)
     except (SchwabApiError, SchwabOAuthError) as exc:
         result = ClosePositionResult(
             account_id=req.account_id,
             account_label=label,
             status="blocked",
-            reasons=[f"market_close_failed:{str(exc)[:200]}"],
+            reasons=[f"market_close_failed:{str(exc)[:200]}", "kept_tracked_retry_or_close_in_schwab"],
             canceled_order_ids=canceled,
             order_payload=payload,
         )
-    return ClosePositionResponse(status=result.status, symbol=req.broker_symbol, account_results=[result], notes=[])
+    note = (
+        "Close failed — position kept tracked. Retry, or close it in Schwab/thinkorswim."
+        if result.status == "blocked"
+        else ""
+    )
+    return ClosePositionResponse(
+        status=result.status,
+        symbol=req.broker_symbol,
+        account_results=[result],
+        notes=[note] if note else [],
+    )
 
 
 @app.get("/positions", response_model=PositionsResponse)
