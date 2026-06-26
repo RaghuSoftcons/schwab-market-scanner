@@ -260,8 +260,6 @@ _DASHBOARD_TEMPLATE = """<!doctype html>
     .warn-text { color: var(--amber); }
 
     /* --- right (proposal) panel --- */
-    /* Open Positions spans BOTH layout columns — a 9-column multi-account table needs full width. */
-    .positions-fullwidth { grid-column: 1 / -1; min-width: 0; }
     .right-panel { min-width: 0; }
     .right-panel .panel-head { align-items: flex-start; }
     .right-panel button { padding: 4px 8px; font-size: 12px; min-height: 30px; }
@@ -491,6 +489,23 @@ _DASHBOARD_TEMPLATE = """<!doctype html>
 
         <section class="panel">
           <div class="panel-head">
+            <div class="panel-title">Open Positions <span class="muted tiny" id="positions-note">dashboard-tracked · saved across restarts</span></div>
+            <div class="panel-actions">
+              <span class="segmented" id="positions-mode" role="group" aria-label="Positions source">
+                <button class="segment-button active" type="button" data-pos-mode="tracked" onclick="setPositionsMode('tracked')">Tracked</button>
+                <button class="segment-button" type="button" data-pos-mode="all" onclick="setPositionsMode('all')">All</button>
+              </span>
+              <span class="muted" id="positions-status">--</span>
+              <button class="ghost" id="positions-refresh-button" onclick="loadPositions(true)">Refresh</button>
+            </div>
+          </div>
+          <div class="panel-body" id="positions-body">
+            <div class="muted">Loading positions...</div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
             <div class="panel-title">Realized P&amp;L</div>
             <div class="panel-actions">
               <span class="muted" id="pnl-status-detail">--</span>
@@ -575,23 +590,6 @@ _DASHBOARD_TEMPLATE = """<!doctype html>
           </div>
         </section>
       </aside>
-
-      <section class="panel positions-fullwidth">
-        <div class="panel-head">
-          <div class="panel-title">Open Positions <span class="muted tiny" id="positions-note">dashboard-tracked · saved across restarts</span></div>
-          <div class="panel-actions">
-            <span class="segmented" id="positions-mode" role="group" aria-label="Positions source">
-              <button class="segment-button active" type="button" data-pos-mode="tracked" onclick="setPositionsMode('tracked')">Tracked</button>
-              <button class="segment-button" type="button" data-pos-mode="all" onclick="setPositionsMode('all')">All</button>
-            </span>
-            <span class="muted" id="positions-status">--</span>
-            <button class="ghost" id="positions-refresh-button" onclick="loadPositions(true)">Refresh</button>
-          </div>
-        </div>
-        <div class="panel-body" id="positions-body">
-          <div class="muted">Loading positions...</div>
-        </div>
-      </section>
     </section>
   </main>
 
