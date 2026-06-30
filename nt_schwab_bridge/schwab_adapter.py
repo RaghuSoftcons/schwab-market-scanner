@@ -62,7 +62,7 @@ def build_schwab_option_chain_provider(config: BridgeConfig) -> SchwabOptionChai
 
     if not config.schwab.market_data_enabled:
         return None
-    if not (config.schwab.token_store_path or config.schwab.access_token or config.schwab.refresh_token):
+    if not (config.schwab.token_authority_url or config.schwab.token_store_path or config.schwab.access_token or config.schwab.refresh_token):
         LOGGER.warning("Schwab market data is enabled, but no token source is configured.")
         return None
     return SchwabOptionChainProvider(
@@ -75,13 +75,14 @@ def schwab_market_data_status(config: BridgeConfig) -> SchwabMarketDataStatusRes
     """Return local read-only Schwab readiness without making market-data calls."""
 
     schwab = config.schwab
-    token_source_configured = bool(schwab.token_store_path or schwab.access_token or schwab.refresh_token)
+    token_source_configured = bool(schwab.token_authority_url or schwab.token_store_path or schwab.access_token or schwab.refresh_token)
     base_payload = {
         "enabled": schwab.market_data_enabled,
         "auto_refresh_enabled": schwab.auto_refresh_enabled,
         "provider_configured": token_source_configured,
         "api_base_configured": bool(schwab.api_base_url),
         "token_store_configured": bool(schwab.token_store_path),
+        "token_authority_configured": bool(schwab.token_authority_url and schwab.token_authority_api_key),
         "client_id_configured": bool(schwab.client_id),
         "client_secret_configured": bool(schwab.client_secret),
         "account_hash_configured": bool(schwab.account_hash),
@@ -257,7 +258,7 @@ def discover_schwab_accounts(
         return [], ["Schwab account discovery is disabled."]
     if not schwab.market_data_enabled:
         return [], ["Schwab account discovery requires Schwab API access to be enabled."]
-    if not (schwab.token_store_path or schwab.access_token or schwab.refresh_token):
+    if not (schwab.token_authority_url or schwab.token_store_path or schwab.access_token or schwab.refresh_token):
         return [], ["No Schwab token source is configured for account discovery."]
 
     data_client = client or SchwabMarketDataClient(schwab)
@@ -329,8 +330,21 @@ class SchwabOAuthManager:
             lambda: httpx.Client(timeout=config.timeout_seconds, trust_env=False)
         )
         self._client_credentials: tuple[str, str] | None = None
+        self._authority_token_state: dict[str, Any] | None = None
+        self._authority_token_fetched_at: datetime | None = None
 
     def get_access_token(self) -> str:
+        authority_error: SchwabOAuthError | None = None
+        if self._token_authority_configured():
+            try:
+                authority_state = self.fetch_authority_token_state()
+                authority_token = str(authority_state.get("access_token", "") or "")
+                if authority_token and not self.is_access_token_expiring(authority_state):
+                    return authority_token
+            except SchwabOAuthError as exc:
+                authority_error = exc
+                LOGGER.warning("Schwab token authority fetch failed: %s", exc)
+
         state = self.load_token_state()
         access_token = str(state.get("access_token", "") or "")
         if access_token and not self.is_access_token_expiring(state):
@@ -344,7 +358,49 @@ class SchwabOAuthManager:
             raise SchwabOAuthError(
                 "Schwab access token is expired or expiring. Use the shared Schwab auth/refresh flow."
             )
+        if authority_error is not None:
+            raise authority_error
         raise SchwabOAuthError("No Schwab access token is available. Login is required.")
+
+    def _token_authority_configured(self) -> bool:
+        return bool(str(self.config.token_authority_url or "").strip() and str(self.config.token_authority_api_key or "").strip())
+
+    def fetch_authority_token_state(self) -> dict[str, Any]:
+        cached = self._authority_token_state
+        if cached and not self.is_access_token_expiring(cached):
+            fetched_at = self._authority_token_fetched_at
+            cache_seconds = int(self.config.token_authority_cache_seconds or 0)
+            if cache_seconds <= 0 or (fetched_at and datetime.now(timezone.utc) - fetched_at < timedelta(seconds=cache_seconds)):
+                return cached
+
+        url = str(self.config.token_authority_url or "").strip()
+        api_key = str(self.config.token_authority_api_key or "").strip()
+        if not url or not api_key:
+            raise SchwabOAuthError("Schwab token authority is not configured.")
+        try:
+            with self._http_client_factory() as client:
+                response = client.get(url, headers={"Accept": "application/json", "X-API-Key": api_key})
+        except Exception as exc:
+            raise SchwabOAuthError(f"Schwab token authority request failed: {exc}") from exc
+        if response.status_code >= 400:
+            raise SchwabOAuthError(f"Schwab token authority returned {response.status_code}: {response.text[:200]}")
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise SchwabOAuthError("Schwab token authority returned invalid JSON.") from exc
+        if not isinstance(payload, dict):
+            raise SchwabOAuthError("Schwab token authority returned an unexpected payload shape.")
+        access_token = str(payload.get("access_token", "") or "")
+        if not access_token:
+            raise SchwabOAuthError("Schwab token authority returned no access token.")
+        state = {
+            "access_token": access_token,
+            "access_token_expires_at": payload.get("access_token_expires_at", ""),
+            "token_type": payload.get("token_type", "Bearer") or "Bearer",
+        }
+        self._authority_token_state = state
+        self._authority_token_fetched_at = datetime.now(timezone.utc)
+        return state
 
     def load_token_state(self) -> dict[str, Any]:
         state: dict[str, Any] = {
@@ -460,6 +516,12 @@ class SchwabOAuthManager:
 
     def status(self) -> dict[str, Any]:
         state = self.load_token_state()
+        authority_error = None
+        if self._token_authority_configured():
+            try:
+                state.update(self.fetch_authority_token_state())
+            except SchwabOAuthError as exc:
+                authority_error = str(exc)
         client_id, client_secret = self.client_credentials()
         expires_at = _parse_datetime(state.get("access_token_expires_at"))
         has_access_token = bool(state.get("access_token"))
@@ -472,6 +534,8 @@ class SchwabOAuthManager:
             "needs_refresh": needs_refresh,
             "login_required": not has_access_token and not has_refresh_token,
             "token_store_path": str(self.token_store_path) if self.token_store_path else "",
+            "token_authority_configured": self._token_authority_configured(),
+            "token_authority_error": authority_error,
             "client_id_configured": bool(client_id),
             "client_secret_configured": bool(client_secret),
         }
@@ -1122,7 +1186,7 @@ def _extract_account_balance_summary(account: dict[str, Any]) -> dict[str, Any]:
     #     account is the PROJECTED figure, which nets out pending/unsettled buys (e.g. open
     #     option scalps). The CURRENT snapshot can be higher and overstates what's deployable
     #     (Individual showed $521.87 current vs $170.54 projected, which is what Schwab shows).
-    #     So we take the MINIMUM of current and projected for the chosen metric — that matches
+    #     So we take the MINIMUM of current and projected for the chosen metric Ã¢â‚¬â€ that matches
     #     Schwab and never overstates affordability.
     raw_type = str(account.get("type", "") or account.get("accountType", "") or "").upper()
     if "MARGIN" in raw_type:

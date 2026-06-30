@@ -307,6 +307,9 @@ class SchwabConfig(BaseModel):
     account_discovery_ttl_seconds: int = Field(default=60, ge=5, le=3600)
     auto_refresh_enabled: bool = False
     token_store_path: str = ""
+    token_authority_url: str = ""
+    token_authority_api_key: str = ""
+    token_authority_cache_seconds: int = Field(default=60, ge=0, le=600)
     account_hash: str = ""
     import_existing_client: bool = True
     api_base_url: str = "https://api.schwabapi.com"
@@ -401,6 +404,9 @@ def _apply_environment_overrides(config: BridgeConfig) -> BridgeConfig:
     option_updates: dict[str, object] = {}
     env_string_fields = {
         "SCHWAB_TOKEN_STORE_PATH": "token_store_path",
+        "SCHWAB_TOKEN_AUTHORITY_URL": "token_authority_url",
+        "SCHWAB_TOKEN_AUTHORITY_API_KEY": "token_authority_api_key",
+        "TOKEN_AUTHORITY_API_KEY": "token_authority_api_key",
         "SCHWAB_ACCOUNT_HASH": "account_hash",
         "SCHWAB_API_BASE_URL": "api_base_url",
         "SCHWAB_TOKEN_URL": "token_url",
@@ -438,6 +444,10 @@ def _apply_environment_overrides(config: BridgeConfig) -> BridgeConfig:
     refresh_skew = _env_int("SCHWAB_TOKEN_REFRESH_SKEW_SECONDS")
     if refresh_skew is not None:
         schwab_updates["token_refresh_skew_seconds"] = refresh_skew
+
+    authority_cache_seconds = _env_int("SCHWAB_TOKEN_AUTHORITY_CACHE_SECONDS")
+    if authority_cache_seconds is not None:
+        schwab_updates["token_authority_cache_seconds"] = authority_cache_seconds
 
     demo_chain_enabled = _env_bool("NT_OPTIONS_DEMO_CHAIN_ENABLED")
     if demo_chain_enabled is not None:

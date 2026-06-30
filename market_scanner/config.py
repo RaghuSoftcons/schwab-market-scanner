@@ -162,6 +162,7 @@ class AppSettings(BaseModel):
             "schwab_market_data_enabled": self.schwab.market_data_enabled,
             "schwab_auto_refresh_enabled": self.schwab.auto_refresh_enabled,
             "schwab_token_store_configured": bool(self.schwab.token_store_path),
+            "schwab_token_authority_configured": bool(self.schwab.token_authority_url and self.schwab.token_authority_api_key),
         }
 
 
@@ -252,6 +253,15 @@ def load_settings() -> SettingsLoadResult:
                 bool(schwab_raw.get("auto_refresh_enabled", False)),
             ),
             "token_store_path": _default_token_store_path(),
+            "token_authority_url": os.getenv("SCHWAB_TOKEN_AUTHORITY_URL", schwab_raw.get("token_authority_url", "")),
+            "token_authority_api_key": os.getenv(
+                "SCHWAB_TOKEN_AUTHORITY_API_KEY",
+                os.getenv("TOKEN_AUTHORITY_API_KEY", schwab_raw.get("token_authority_api_key", "")),
+            ),
+            "token_authority_cache_seconds": _env_int(
+                "SCHWAB_TOKEN_AUTHORITY_CACHE_SECONDS",
+                int(schwab_raw.get("token_authority_cache_seconds", 60)),
+            ),
             "client_id": os.getenv("SCHWAB_CLIENT_ID", schwab_raw.get("client_id", "")),
             "client_secret": os.getenv("SCHWAB_CLIENT_SECRET", schwab_raw.get("client_secret", "")),
             "access_token": os.getenv("SCHWAB_ACCESS_TOKEN", schwab_raw.get("access_token", "")),
