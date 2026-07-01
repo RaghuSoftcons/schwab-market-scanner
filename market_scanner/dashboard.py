@@ -122,7 +122,7 @@ _DASHBOARD_TEMPLATE = """<!doctype html>
       min-width: 200px;
       color: var(--ink);
     }
-    .page { width: min(1440px, 100%); margin: 0 auto; padding: 8px; }
+    .page { width: min(1560px, 100%); margin: 0 auto; padding: 8px; }
     .topbar {
       display: grid; grid-template-columns: 1fr auto; gap: 6px; align-items: center; margin-bottom: 6px;
     }
@@ -131,7 +131,7 @@ _DASHBOARD_TEMPLATE = """<!doctype html>
     .top-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
     .layout {
       display: grid;
-      grid-template-columns: minmax(540px, 1.06fr) minmax(420px, 0.94fr);
+      grid-template-columns: minmax(500px, 0.95fr) minmax(440px, 1.05fr);
       gap: 12px;
       align-items: start;
     }
