@@ -394,8 +394,10 @@ _DASHBOARD_TEMPLATE = """<!doctype html>
             <div class="sub" id="last-update">Loading...</div>
           </div>
           <div class="top-actions">
+            <span id="whoami-chip" style="display:none; align-self:center; font-size:12px; color:#9fb; padding:0 8px;"></span>
             <button class="ghost" id="mute-button" title="Mute audio cues" onclick="toggleMute()">🔔 Mute</button>
             <button class="primary" id="build-all-button" data-run-scan-button onclick="runScan(true)">Build All</button>
+            <a class="ghost" id="logout-button" href="/logout" style="display:none;">Logout</a>
           </div>
         </header>
 
@@ -594,6 +596,27 @@ _DASHBOARD_TEMPLATE = """<!doctype html>
   </main>
 
 <script>
+// When dashboard auth is enabled, an expired/absent session makes API calls 401 -> bounce to login.
+// No-op when auth is off (never 401s). Ported from nt-bridge-v2.
+(function () {
+  const _fetch = window.fetch;
+  window.fetch = function () {
+    return _fetch.apply(this, arguments).then(function (resp) {
+      if (resp && resp.status === 401) { window.location.href = "/login"; }
+      return resp;
+    });
+  };
+})();
+// Show "Signed in: X · Logout" only when dashboard auth is enabled.
+(function () {
+  fetch("/whoami").then(function (r) { return r.ok ? r.json() : null; }).then(function (w) {
+    if (!w || !w.auth_enabled) { return; }
+    const chip = document.getElementById("whoami-chip");
+    const out = document.getElementById("logout-button");
+    if (chip) { chip.textContent = "Signed in: " + (w.display_name || w.trader); chip.style.display = ""; }
+    if (out) { out.style.display = "inline-flex"; }
+  }).catch(function () {});
+})();
 const MAX_PROPOSAL_QUANTITY = 10;
 let appState = {
   health: null,

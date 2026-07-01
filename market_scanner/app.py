@@ -11,14 +11,23 @@ from datetime import datetime, time, timedelta, timezone
 from typing import Annotated
 from zoneinfo import ZoneInfo
 
-from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query
-from fastapi.responses import HTMLResponse
+from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 import os
 
+from nt_schwab_bridge.auth import (
+    AuthConfig,
+    UserStore,
+    render_login_html,
+    set_current_trader,
+    sign_session,
+    verify_machine_key,
+    verify_session,
+)
 from nt_schwab_bridge.automation import AutomationConfig, AutomationEngine, Tier
 from nt_schwab_bridge.config import BridgeConfig, RiskConfig, ServiceConfig
-from nt_schwab_bridge.dashboard_settings import DEFAULT_STOP_LOSS_PERCENT
+from nt_schwab_bridge.dashboard_settings import DEFAULT_STOP_LOSS_PERCENT, DashboardSettingsStore
 from nt_schwab_bridge.models import OptionProposal, OptionProposalLeg
 from nt_schwab_bridge.gex_exits import protective_stop_premium
 from nt_schwab_bridge.pnl_sync import closes_from_transactions
@@ -160,6 +169,144 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="Schwab Market Scanner", version="0.1.0", lifespan=lifespan)
+
+# --- Dashboard authentication (multi-trader login), ported from nt-bridge-v2 ---
+# OFF by default (local unchanged). Enable on Railway with DASHBOARD_AUTH_ENABLED=true.
+# Browsers must log in (session cookie); machine callers (e.g. GPT actions) bypass via the
+# EXISTING shared X-API-Key (settings.service.api_key), so nothing machine-facing breaks.
+_auth_config = AuthConfig.from_env()
+_user_store = UserStore(_auth_config.users_file, users_json=_auth_config.users_json)
+# Open (no session needed): health check, the login pages, and the keyed mobile kill switch.
+_AUTH_OPEN_PATHS = {"/health", "/login", "/logout", "/favicon.ico", "/automation/kill"}
+
+
+@app.middleware("http")
+async def _dashboard_auth(request: Request, call_next):
+    cfg = _auth_config
+    if not cfg.enabled:
+        set_current_trader("")  # attribution resolves to the owner name
+        return await call_next(request)
+    path = request.url.path
+    if path in _AUTH_OPEN_PATHS or path.startswith("/static/"):
+        return await call_next(request)
+    # Machine callers (GPT actions, etc.) present the shared X-API-Key -> allowed, no session.
+    api_key = settings.service.api_key.strip()
+    if api_key and verify_machine_key(request.headers.get("x-api-key", ""), api_key):
+        set_current_trader(cfg.owner_name)
+        return await call_next(request)
+    if cfg.misconfigured:  # enabled but no signing secret -> fail CLOSED, never serve open
+        return JSONResponse(
+            {"detail": "Dashboard auth is enabled but DASHBOARD_SESSION_SECRET is not set."},
+            status_code=503,
+        )
+    username = verify_session(request.cookies.get(cfg.cookie_name, ""), cfg.secret)
+    if not username:
+        accept = request.headers.get("accept", "")
+        if request.method == "GET" and "text/html" in accept:
+            return RedirectResponse(url="/login", status_code=303)
+        return JSONResponse({"detail": "Authentication required."}, status_code=401)
+    set_current_trader(username)
+    return await call_next(request)
+
+
+@app.get("/login", response_class=HTMLResponse)
+async def login_page(error: str = "") -> HTMLResponse:
+    return HTMLResponse(render_login_html(error=bool(error)), headers={"Cache-Control": "no-store"})
+
+
+@app.post("/login")
+async def login_submit(request: Request):
+    from urllib.parse import parse_qs
+
+    raw = (await request.body()).decode("utf-8", "replace")
+    form = parse_qs(raw, keep_blank_values=True)
+    username = (form.get("username", [""])[0] or "").strip()
+    password = form.get("password", [""])[0] or ""
+    canonical = _user_store.verify(username, password)
+    if not canonical or not _auth_config.secret:
+        return RedirectResponse(url="/login?error=1", status_code=303)
+    token = sign_session(canonical, _auth_config.secret, ttl_seconds=_auth_config.session_ttl_seconds)
+    resp = RedirectResponse(url="/dashboard", status_code=303)
+    resp.set_cookie(
+        _auth_config.cookie_name, token, max_age=_auth_config.session_ttl_seconds,
+        httponly=True, secure=_auth_config.cookie_secure, samesite="lax", path="/",
+    )
+    return resp
+
+
+@app.get("/logout")
+async def logout():
+    resp = RedirectResponse(url="/login", status_code=303)
+    resp.delete_cookie(_auth_config.cookie_name, path="/")
+    return resp
+
+
+@app.get("/whoami")
+async def whoami() -> dict:
+    from nt_schwab_bridge.auth import current_trader_name
+
+    trader = current_trader_name(default=_auth_config.owner_name)
+    return {
+        "trader": trader,
+        "display_name": _user_store.display_name(trader) or trader,
+        "auth_enabled": _auth_config.enabled,
+    }
+
+
+# --- Durable dashboard settings (ported from nt-bridge-v2) --------------------
+# Backs SL %, OCO/OTOCO, targets, entry offset, expiry, and stop-management so the
+# controls persist and drive the order payload (Phase 1 of LOOKFEEL_PARITY_PLAN.md).
+# Forces stop_loss_percent=50 on startup (never carry "No SL"), like the Unified dashboard.
+_dashboard_settings = DashboardSettingsStore(".local_state/dashboard_settings.json")
+
+
+def _dashboard_settings_dict() -> dict:
+    s = _dashboard_settings
+    sm = s.get_stop_mgmt()
+    return {
+        "max_loss_dollars": s.get_max_loss_dollars(), "max_loss_choices": s.max_loss_choices,
+        "entry_offset_cents": s.get_entry_offset_cents(), "entry_offset_choices": s.entry_offset_choices,
+        "expiry_label": s.get_expiry_label(), "expiry_choices": s.expiry_choices,
+        "target_percentages": s.get_target_percentages(),
+        "stop_loss_percent": s.get_stop_loss_percent(), "stop_loss_percent_choices": s.stop_loss_percent_choices,
+        "allow_itm": s.get_allow_itm(), "close_on_reversal": s.get_close_on_reversal(), "otoco": s.get_otoco(),
+        "stop_mode": s.get_stop_mode(), "stop_mode_choices": s.stop_mode_choices,
+        "trail_start_percent": sm.get("trail_start_percent"),
+        "trail_distance_percent": sm.get("trail_distance_percent"),
+        "trail_poll_seconds": sm.get("trail_poll_seconds"),
+    }
+
+
+@app.get("/dashboard/settings")
+async def get_dashboard_settings() -> dict:
+    return _dashboard_settings_dict()
+
+
+@app.post("/dashboard/settings")
+async def update_dashboard_settings(payload: dict = Body(...), _: None = Depends(_require_api_key)) -> dict:
+    s = _dashboard_settings
+    setters = {
+        "max_loss_dollars": s.set_max_loss_dollars,
+        "entry_offset_cents": s.set_entry_offset_cents,
+        "expiry_label": s.set_expiry_label,
+        "target_percentages": s.set_target_percentages,
+        "stop_loss_percent": s.set_stop_loss_percent,
+        "allow_itm": s.set_allow_itm,
+        "close_on_reversal": s.set_close_on_reversal,
+        "otoco": s.set_otoco,
+        "stop_mgmt": s.set_stop_mgmt,
+    }
+    try:
+        for key, fn in setters.items():
+            if key in payload:
+                fn(payload[key])
+        # Also accept flat stop-management fields (stop_mode / trail_*).
+        flat = {k: payload[k] for k in ("stop_mode", "trail_start_percent", "trail_distance_percent", "trail_poll_seconds") if k in payload}
+        if flat:
+            s.set_stop_mgmt(flat)
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=422, detail=f"Invalid dashboard setting: {exc}")
+    return _dashboard_settings_dict()
 
 
 @app.get("/health")
