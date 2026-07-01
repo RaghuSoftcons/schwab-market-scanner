@@ -66,17 +66,25 @@ server store, and there is **no trailing monitor** in the scanner backend at all
   `&stop_loss_percent=`, so the chosen SL% actually reaches the OTOCO stop (was always the default constant).
 - Confirmation line shows the SL ("SL 50% below entry"). Tests: `tests/test_sl_selector.py` (3). Suite 133 ✅.
 
-#### Phase 2b — Stop-management CONTROLS (mode + trail) — pending, low-risk UI
-- Add `#stop-mode-select` (fixed/breakeven/trailing/be_then_trail) + `#trail-start`/`#trail-distance`/
-  `#trail-poll`. Backend `dashboard_settings.py` already has `get/set_stop_mgmt`; carry into `appState`.
-- **Blocked-until-2c to be useful:** without the monitor these persist a preference but don't act, so DON'T
-  ship them live-looking until 2c — or gate/label them "arms once trailing monitor ships."
+#### Phase 2b — Stop-management CONTROLS (mode + trail) — ✅ DONE 2026-07-01
+- Added `#stop-mode-select` (fixed/breakeven/trailing/be_then_trail) + `#trail-start`/`#trail-distance`/
+  `#trail-poll` to the settings bar; `appState` fields (stopMode/trailStartPct/trailDistancePct/trailPollSecs,
+  defaults from `DEFAULT_STOP_MGMT`: be_then_trail/10/8/4), v6 migration. Trail fields grey out for Fixed SL.
+- LIVE confirmation prints the active management ("at +10% profit, stop → breakeven then trails 8%").
+- Backed by 2c below, so the controls actually act (not dead UI).
 
-#### Phase 2c — Trailing MONITOR (the big backend port) — pending, needs live-verify
-- Port Unified's arm loop + OCO cancel-then-place (`_arm_account_stop`, `_build_arm_oco_payload`,
-  `_stop_replacement_payload`, the give-up/transient logic) so stop-mode/trail actually arm on the scanner.
-- Live-verify like the Unified fix (cross +Start% → armed → real TRAILING/BE stop → exits above BE).
-- Deprioritized per Raghu ("we can re-visit TS issues"); schedule as its own focused pass.
+#### Phase 2c — Trailing MONITOR (the backend port) — ✅ CODE-COMPLETE 2026-07-01 · ⏳ needs live-verify
+- New `market_scanner/trailing.py` (dependency-injected, fully unit-tested): payload builders
+  (breakeven STOP, native TRAILING_STOP, arm-OCO, fixed-OCO restore), `resting_oco_for_symbol`,
+  `confirm_orders_cleared`, `arm_account_stop` (cancel→confirm→place with restore-on-failure +
+  transient/`_TrailArmRejected` taxonomy + 3-strike give-up), and `evaluate_trailing_arms`.
+- `app.py`: `_registration_stop_mgmt` freezes intent at send (single-leg OTOCO + real stop + non-fixed);
+  `stop_mgmt` stored on the tracked position; `_trailing_monitor_loop` added to the lifespan (adaptive
+  cadence: `trail_poll_seconds` when pending, 30s idle; only acts when the live gate is open); send URL
+  carries `stop_mode`/`trail_start_percent`/`trail_distance_percent`.
+- Tests: `tests/test_trailing.py` (18) + `tests/test_registration_stop_mgmt.py` (5). Suite 156 ✅.
+- **STILL NEEDS LIVE-VERIFY** (market was closed): a single-leg position crosses +Start% → armed →
+  resting fixed STOP replaced by a real BE/TRAILING stop → exits above breakeven. Do during market hours.
 
 ### Phase 3 — Proposal card parity
 - Add legs display, the dark TOS order line + **Copy** button, and the **Exit Plan** section with a

@@ -61,6 +61,7 @@ from market_scanner.models import (
 from market_scanner.orders import fallback_broker_option_symbol, schwab_order_payload
 from market_scanner.scanner import MarketScanner, ProposalBuildSettings
 from market_scanner.storage import ScannerStorage
+from market_scanner import trailing
 
 
 settings_load = load_settings()
@@ -69,6 +70,7 @@ storage = ScannerStorage(settings.storage.path)
 scanner = MarketScanner(settings)
 trade_log_store = TradeLogStore(settings.storage.path / "trades.jsonl")
 _scheduler_task: asyncio.Task | None = None
+_trailing_task: asyncio.Task | None = None
 
 # Realized-P&L sync lookback (days). Schwab transactions older than this are not re-scanned.
 _PNL_SYNC_LOOKBACK_DAYS = 14
@@ -157,15 +159,61 @@ async def _scheduler_loop() -> None:
         await asyncio.sleep(settings.scanner.interval_minutes * 60)
 
 
+def _has_pending_arms() -> bool:
+    """True if any tracked position still has an un-armed account under active stop management."""
+    for entry in active_positions.values():
+        if not isinstance(entry, dict):
+            continue
+        sm = entry.get("stop_mgmt")
+        if not isinstance(sm, dict) or str(sm.get("mode") or "fixed") == "fixed":
+            continue
+        hashes = entry.get("account_hashes") or {}
+        hlist = list(hashes.values()) if isinstance(hashes, dict) else list(hashes)
+        armed = set(sm.get("armed_hashes") or [])
+        if any(h and h not in armed for h in hlist):
+            return True
+    return False
+
+
+async def _trailing_monitor_loop() -> None:
+    """Poll live prices and arm breakeven/trailing stops for scanner-sent single-leg positions.
+
+    Adaptive cadence: fast (trail_poll_seconds, min 1s) while any position is pending arm; slow
+    (30s) when idle. Only acts when the live gate is open — arming cancels+places real orders.
+    Mirrors the Unified nt-bridge-v2 trailing monitor; the arm logic lives in market_scanner.trailing.
+    """
+    await asyncio.sleep(8)  # let the app settle before the first poll
+    while True:
+        poll_s = 30.0
+        try:
+            if _has_pending_arms() and settings.service.live_gate_open:
+                sm_cfg = _dashboard_settings.get_stop_mgmt()
+                poll_s = max(1.0, float(sm_cfg.get("trail_poll_seconds") or 4))
+                await asyncio.to_thread(
+                    trailing.evaluate_trailing_arms,
+                    active_positions=active_positions,
+                    make_client=lambda: SchwabMarketDataClient(settings.schwab),
+                    avg_mark_fn=_position_avg_mark_pnl,
+                    save_positions=_save_active_positions,
+                    now_utc=datetime.now(timezone.utc),
+                    log=None,
+                )
+        except Exception:
+            pass  # never let a monitor error kill the loop
+        await asyncio.sleep(poll_s)
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    global _scheduler_task
+    global _scheduler_task, _trailing_task
     _scheduler_task = asyncio.create_task(_scheduler_loop())
+    _trailing_task = asyncio.create_task(_trailing_monitor_loop())
     try:
         yield
     finally:
-        if _scheduler_task is not None:
-            _scheduler_task.cancel()
+        for task in (_scheduler_task, _trailing_task):
+            if task is not None:
+                task.cancel()
 
 
 app = FastAPI(title="Schwab Market Scanner", version="0.1.0", lifespan=lifespan)
@@ -511,7 +559,35 @@ async def automation_kill_mobile(key: str = Query(default="")) -> dict:
 # The authoritative Schwab pull listed every unrelated holding, which was noise. Tradeoff: a
 # position placed outside this dashboard, or before a restart, won't appear here.
 
-def _register_active_position(proposal: OptionProposal, account_ids: list[str], accounts_by_id: dict, broker_order_ids: dict) -> None:
+def _registration_stop_mgmt(
+    proposal: OptionProposal, otoco_applied: bool, target_percentages: list[float],
+    stop_mode: str, trail_start_percent: float, trail_distance_percent: float, stop_loss_percent: float,
+) -> dict | None:
+    """Capture active-stop intent at SEND time so the trailing monitor can arm it later.
+
+    Only single-leg OTOCO entries with a real protective stop arm — verticals, a plain (non-OTOCO)
+    entry, a disabled stop, or 'fixed' mode return None (the resting fixed OCO is left as-is). The
+    dict is frozen at send time so a later dashboard settings change can't retroactively alter a
+    live position's management. Mirrors the Unified nt-bridge-v2 _registration_stop_mgmt."""
+    mode = (stop_mode or "fixed").strip().lower()
+    if mode not in ("breakeven", "trailing", "be_then_trail"):
+        return None
+    if not otoco_applied or proposal.structure != "single" or len(proposal.legs) != 1:
+        return None
+    if not stop_loss_percent or stop_loss_percent <= 0:
+        return None  # no fixed stop to replace → nothing to arm
+    first_target = float(target_percentages[0]) if target_percentages else 0.0
+    return {
+        "mode": mode,
+        "start_pct": float(trail_start_percent or 0),
+        "trail_pct": float(trail_distance_percent or 0),
+        "target_pct": first_target,
+        "armed_hashes": [],
+        "arm_fails": {},
+    }
+
+
+def _register_active_position(proposal: OptionProposal, account_ids: list[str], accounts_by_id: dict, broker_order_ids: dict, stop_mgmt: dict | None = None) -> None:
     """Record a live-sent position so it can be shown + closed from the dashboard this session."""
     if not account_ids:
         return
@@ -535,6 +611,7 @@ def _register_active_position(proposal: OptionProposal, account_ids: list[str], 
         "account_hashes": {aid: getattr(accounts_by_id.get(aid), "account_hash", "") for aid in account_ids},
         "broker_order_ids": dict(broker_order_ids),
         "sent_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+        "stop_mgmt": stop_mgmt,
     }
     _save_active_positions()
 
@@ -1762,6 +1839,18 @@ async def send_proposal(
         float,
         Query(ge=0, le=99, description="OTOCO protective stop, percent below entry limit. 0 disables the stop."),
     ] = float(DEFAULT_STOP_LOSS_PERCENT),
+    stop_mode: Annotated[
+        str,
+        Query(description="Active stop management: fixed | breakeven | trailing | be_then_trail."),
+    ] = "fixed",
+    trail_start_percent: Annotated[
+        float,
+        Query(ge=0, le=100, description="Profit % at which stop management arms (single-leg OTOCO only)."),
+    ] = 10.0,
+    trail_distance_percent: Annotated[
+        float,
+        Query(ge=0, le=100, description="Trail distance as % of entry once armed."),
+    ] = 8.0,
 ) -> SendProposalResponse:
     proposal = storage.find_proposal(proposal_id)
     if proposal is None:
@@ -1927,7 +2016,21 @@ async def send_proposal(
     # Track live-submitted positions so they (and only they) appear for dashboard Close-now.
     submitted = {r.account_id: r.broker_order_id for r in results if r.status == "submitted"}
     if submitted:
-        _register_active_position(proposal_to_send, list(submitted.keys()), accounts_by_id, submitted)
+        stop_mgmt = _registration_stop_mgmt(
+            proposal_to_send,
+            otoco_applied=bool(otoco_payloads),
+            target_percentages=_parse_target_percentages(target_percentages),
+            stop_mode=stop_mode,
+            trail_start_percent=trail_start_percent,
+            trail_distance_percent=trail_distance_percent,
+            stop_loss_percent=stop_loss_percent,
+        )
+        _register_active_position(proposal_to_send, list(submitted.keys()), accounts_by_id, submitted, stop_mgmt=stop_mgmt)
+        if stop_mgmt:
+            otoco_notes.append(
+                f"Active stop: {stop_mgmt['mode']} arms at +{stop_mgmt['start_pct']:g}% "
+                f"(trail {stop_mgmt['trail_pct']:g}%); monitored server-side."
+            )
     response = SendProposalResponse(
         status=status,
         proposal_id=proposal_id,

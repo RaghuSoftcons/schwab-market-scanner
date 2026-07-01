@@ -576,6 +576,18 @@ _DASHBOARD_TEMPLATE = """<!doctype html>
               <span class="setting-label">SL %</span>
               <span class="segmented" id="stop-loss-buttons" role="group" aria-label="Proposal stop loss"></span>
             </span>
+            <span class="proposal-settings" aria-label="Active stop settings" title="Active stop management (single-leg). 'Fixed SL' = the plain OTOCO stop above. The others START once profit reaches Start %, then: Breakeven moves the stop to entry, Trailing trails Trail% behind, BE → Trail does both. Start % must be below your target %.">
+              <span class="setting-label">Stop</span>
+              <select id="stop-mode-select" class="button" style="min-height:24px;padding:1px 6px;font-size:12px;" onchange="setStopMode(this.value)">
+                <option value="fixed">Fixed SL</option>
+                <option value="breakeven">Breakeven</option>
+                <option value="trailing">Trailing</option>
+                <option value="be_then_trail">BE &rarr; Trail</option>
+              </select>
+              <label class="setting-label" title="Profit % at which stop management starts (absolute, from entry)" style="font-weight:400;">Start %<input id="trail-start" type="number" min="0" max="100" step="1" style="width:44px;" onchange="setTrailField('trailStartPct', this.value)"></label>
+              <label class="setting-label" title="Trail this far behind, as % of entry" style="font-weight:400;">Trail%<input id="trail-distance" type="number" min="0" max="100" step="1" style="width:44px;" onchange="setTrailField('trailDistancePct', this.value)"></label>
+              <label class="setting-label" title="Price poll cadence while armed (seconds)" style="font-weight:400;">Poll<input id="trail-poll" type="number" min="1" max="60" step="1" style="width:44px;" onchange="setTrailField('trailPollSecs', this.value)"></label>
+            </span>
           </div>
           <div class="panel-body">
             <div class="moneyness-strip">
@@ -658,7 +670,12 @@ let appState = {
     entryOffsetChoices: [10, 20, 30, 40, 50],
     targets: [20, 50, 60],
     stopLossPercent: 50,
-    stopLossChoices: [0, 20, 25, 30, 40, 50, 60, 70, 80]
+    stopLossChoices: [0, 20, 25, 30, 40, 50, 60, 70, 80],
+    stopMode: "be_then_trail",
+    stopModeChoices: ["fixed", "breakeven", "trailing", "be_then_trail"],
+    trailStartPct: 10,
+    trailDistancePct: 8,
+    trailPollSecs: 4
   }
 };
 
@@ -742,7 +759,14 @@ function loadDashboardSettings() {
     if (typeof appState.settings.stopLossPercent !== "number") {
       appState.settings.stopLossPercent = 50;
     }
-    appState.settings.settingsVersion = 5;
+    // v6: active stop-management (mode + trail params). Always reset the choice list; default the
+    // fields if the saved payload predates them.
+    appState.settings.stopModeChoices = ["fixed", "breakeven", "trailing", "be_then_trail"];
+    if (typeof appState.settings.stopMode !== "string") appState.settings.stopMode = "be_then_trail";
+    if (typeof appState.settings.trailStartPct !== "number") appState.settings.trailStartPct = 10;
+    if (typeof appState.settings.trailDistancePct !== "number") appState.settings.trailDistancePct = 8;
+    if (typeof appState.settings.trailPollSecs !== "number") appState.settings.trailPollSecs = 4;
+    appState.settings.settingsVersion = 6;
   } catch {
     return;
   }
@@ -774,6 +798,21 @@ function renderSetupControls() {
       `<button class="segment-button ${choice === settings.stopLossPercent ? "active" : ""}" type="button" onclick="setStopLoss(${choice})">${choice === 0 ? "Off" : choice + "%"}</button>`
     )).join("");
   }
+  if (byId("stop-mode-select")) byId("stop-mode-select").value = settings.stopMode || "fixed";
+  if (byId("trail-start")) byId("trail-start").value = settings.trailStartPct;
+  if (byId("trail-distance")) byId("trail-distance").value = settings.trailDistancePct;
+  if (byId("trail-poll")) byId("trail-poll").value = settings.trailPollSecs;
+  updateTrailFieldState();
+}
+
+// Trail Start/Trail%/Poll only matter once a non-fixed stop mode is chosen; grey them out for Fixed SL
+// so the bar reads clearly (matches the Unified dashboard's behavior).
+function updateTrailFieldState() {
+  const active = (appState.settings.stopMode || "fixed") !== "fixed";
+  ["trail-start", "trail-distance", "trail-poll"].forEach(id => {
+    const el = byId(id);
+    if (el) { el.disabled = !active; el.style.opacity = active ? "1" : "0.45"; }
+  });
 }
 
 function forceAutoExpiry() {
@@ -807,6 +846,30 @@ function setStopLoss(value) {
   appState.settings.stopLossPercent = Number(value);
   saveDashboardSettings();
   render();
+}
+function setStopMode(value) {
+  const choices = appState.settings.stopModeChoices || ["fixed", "breakeven", "trailing", "be_then_trail"];
+  appState.settings.stopMode = choices.includes(value) ? value : "fixed";
+  saveDashboardSettings();
+  render();
+}
+function setTrailField(field, value) {
+  const num = Number(value);
+  if (Number.isFinite(num) && num >= 0) {
+    appState.settings[field] = num;
+    saveDashboardSettings();
+  }
+  updateTrailFieldState();
+}
+// A plain-English line for the LIVE confirmation describing active stop management.
+function stopModeLabel(mode, settings) {
+  if (!mode || mode === "fixed") return "";
+  const start = Number(settings.trailStartPct);
+  const trail = Number(settings.trailDistancePct);
+  if (mode === "breakeven") return `\\nStop mgmt: at +${start}% profit, stop moves to breakeven (entry).`;
+  if (mode === "trailing") return `\\nStop mgmt: at +${start}% profit, stop trails ${trail}% behind the mark.`;
+  if (mode === "be_then_trail") return `\\nStop mgmt: at +${start}% profit, stop → breakeven then trails ${trail}% behind.`;
+  return "";
 }
 function setCloseOnReversal(value) {
   appState.settings.closeOnReversal = Boolean(value);
@@ -2194,11 +2257,13 @@ async function sendProposal(index) {
   // OTOCO only applies to single-leg entries; the backend falls back to a plain entry otherwise.
   const otoco = Boolean(appState.settings.otoco) && proposal.structure === "single";
   const slPct = Number(appState.settings.stopLossPercent ?? 50);
+  const stopMode = otoco ? (appState.settings.stopMode || "fixed") : "fixed";
   let confirmLiveOrder = false;
   if (liveGateOpen()) {
     const slText = slPct > 0 ? `${slPct}% below entry` : "none";
     const otocoLine = otoco ? `\\nOTOCO: entry placed as bracketed slices — target + stop (SL ${slText}) attach at Schwab and activate on fill.` : "";
-    confirmLiveOrder = window.confirm(`Submit LIVE Schwab order?\\n\\n${proposal.tos_order_line}\\nAccounts: ${selectedIds.join(", ")}\\nMax loss: ${money(proposal.max_loss)}${otocoLine}\\n\\nOnly continue if this is exactly the trade you want.`);
+    const stopMgmtLine = stopModeLabel(stopMode, appState.settings);
+    confirmLiveOrder = window.confirm(`Submit LIVE Schwab order?\\n\\n${proposal.tos_order_line}\\nAccounts: ${selectedIds.join(", ")}\\nMax loss: ${money(proposal.max_loss)}${otocoLine}${stopMgmtLine}\\n\\nOnly continue if this is exactly the trade you want.`);
     if (!confirmLiveOrder) {
       if (status) status.textContent = "Live order cancelled before submission.";
       return;
@@ -2215,7 +2280,10 @@ async function sendProposal(index) {
   };
   const opts = authOptions("POST", body);
   const targets = encodeURIComponent((appState.settings.targets || [20, 50, 60]).join(","));
-  const result = await fetchJson(`/proposals/${encodeURIComponent(proposal.id)}/send?target_percentages=${targets}&stop_loss_percent=${encodeURIComponent(slPct)}`, opts);
+  const smQ = `&stop_mode=${encodeURIComponent(stopMode)}` +
+    `&trail_start_percent=${encodeURIComponent(Number(appState.settings.trailStartPct ?? 10))}` +
+    `&trail_distance_percent=${encodeURIComponent(Number(appState.settings.trailDistancePct ?? 8))}`;
+  const result = await fetchJson(`/proposals/${encodeURIComponent(proposal.id)}/send?target_percentages=${targets}&stop_loss_percent=${encodeURIComponent(slPct)}${smQ}`, opts);
   if (!result.ok) {
     if (status) status.textContent = result.data?.detail || result.data?.body || `HTTP ${result.status}`;
     return;
