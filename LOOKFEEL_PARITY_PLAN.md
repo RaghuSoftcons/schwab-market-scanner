@@ -53,13 +53,30 @@ Next: Phase 2 wires the dashboard controls to these endpoints and makes them sha
 - Tests: settings round-trip, SL-reset-on-load, choice validation.
 
 ### Phase 2 — Order-entry controls parity (SL % + stop management + wiring)
-- Add `#stop-loss-buttons` (0/20/25/30/40/50/60/70/80) and the stop-mode + trail controls
-  (`#stop-mode-select`, `#trail-start`, `#trail-distance`, `#trail-poll`) to the scanner settings bar.
-- Point ALL settings controls (expiry, allow-ITM, close-on-reversal, OTOCO, max-loss, entry-offset,
-  targets, SL%, stop-mode) at `POST /dashboard/settings` (replace localStorage-only paths).
-- Wire the order builder (`market_scanner/scanner.py` `ProposalBuildSettings` + `orders.py`) so OTOCO,
-  target %s, entry-offset, and SL% actually shape the payload (entry limit, OCO/OTOCO brackets, stop).
-- Tests: payload reflects each setting (OTOCO on→bracketed; SL%→stop price; offset→limit; targets→exits).
+
+**Correction discovered during Phase 2 (2026-07-01):** the scanner send is already OTOCO-capable —
+`send_proposal` accepts `target_percentages` + `stop_loss_percent` and calls `_schwab_otoco_entry_payloads`.
+Settings are **client-side localStorage + query params** (`appState.settings` → `sendProposal` URL), NOT the
+server store, and there is **no trailing monitor** in the scanner backend at all. So Phase 2 splits:
+
+#### Phase 2a — SL% selector, wired end-to-end — ✅ DONE 2026-07-01
+- Added `#stop-loss-buttons` (0/20/25/30/40/50/60/70/80, default 50) to the settings bar; `setStopLoss` +
+  `stopLossPercent`/`stopLossChoices` in `appState.settings` (localStorage, settingsVersion→5 migration).
+- **Fixed a latent bug:** `sendProposal` sent only `target_percentages`; it now also sends
+  `&stop_loss_percent=`, so the chosen SL% actually reaches the OTOCO stop (was always the default constant).
+- Confirmation line shows the SL ("SL 50% below entry"). Tests: `tests/test_sl_selector.py` (3). Suite 133 ✅.
+
+#### Phase 2b — Stop-management CONTROLS (mode + trail) — pending, low-risk UI
+- Add `#stop-mode-select` (fixed/breakeven/trailing/be_then_trail) + `#trail-start`/`#trail-distance`/
+  `#trail-poll`. Backend `dashboard_settings.py` already has `get/set_stop_mgmt`; carry into `appState`.
+- **Blocked-until-2c to be useful:** without the monitor these persist a preference but don't act, so DON'T
+  ship them live-looking until 2c — or gate/label them "arms once trailing monitor ships."
+
+#### Phase 2c — Trailing MONITOR (the big backend port) — pending, needs live-verify
+- Port Unified's arm loop + OCO cancel-then-place (`_arm_account_stop`, `_build_arm_oco_payload`,
+  `_stop_replacement_payload`, the give-up/transient logic) so stop-mode/trail actually arm on the scanner.
+- Live-verify like the Unified fix (cross +Start% → armed → real TRAILING/BE stop → exits above BE).
+- Deprioritized per Raghu ("we can re-visit TS issues"); schedule as its own focused pass.
 
 ### Phase 3 — Proposal card parity
 - Add legs display, the dark TOS order line + **Copy** button, and the **Exit Plan** section with a
@@ -92,3 +109,5 @@ Next: Phase 2 wires the dashboard controls to these endpoints and makes them sha
 
 ## Change Log
 - 2026-07-01  Plan written from side-by-side dashboard maps (Claude + Raghu).
+- 2026-07-01  Phase 2 corrected + split (2a/2b/2c). Phase 2a (SL% selector wired end-to-end + send-bug fix)
+              DONE; tests 133 green. 2b/2c (stop-management controls + trailing monitor) scoped, deferred.

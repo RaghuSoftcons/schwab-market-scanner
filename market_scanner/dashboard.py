@@ -572,6 +572,10 @@ _DASHBOARD_TEMPLATE = """<!doctype html>
               <span class="target-inputs" id="target-inputs" role="group" aria-label="Proposal targets"></span>
               <button class="ghost" onclick="applyTargets()">Apply</button>
             </span>
+            <span class="proposal-settings" aria-label="Stop loss settings" title="OTOCO protective stop, percent below the entry limit. 0 disables the stop. Applied when OTOCO Bracket is on (single-leg).">
+              <span class="setting-label">SL %</span>
+              <span class="segmented" id="stop-loss-buttons" role="group" aria-label="Proposal stop loss"></span>
+            </span>
           </div>
           <div class="panel-body">
             <div class="moneyness-strip">
@@ -652,7 +656,9 @@ let appState = {
     maxLossChoices: [200, 300, 400, 500],
     entryOffsetCents: 10,
     entryOffsetChoices: [10, 20, 30, 40, 50],
-    targets: [20, 50, 60]
+    targets: [20, 50, 60],
+    stopLossPercent: 50,
+    stopLossChoices: [0, 20, 25, 30, 40, 50, 60, 70, 80]
   }
 };
 
@@ -730,7 +736,13 @@ function loadDashboardSettings() {
       appState.settings.otoco = true;
     }
     appState.settings.expiryChoices = ["AUTO", "0DTE", "1DTE", "2DTE", "3DTE", "THIS_FRIDAY", "NEXT_WEEK_FRIDAY"];
-    appState.settings.settingsVersion = 4;
+    // v5: durable SL% selector added. Always reset the choice list; default the value if the
+    // saved payload predates the field (older users have no stopLossPercent stored).
+    appState.settings.stopLossChoices = [0, 20, 25, 30, 40, 50, 60, 70, 80];
+    if (typeof appState.settings.stopLossPercent !== "number") {
+      appState.settings.stopLossPercent = 50;
+    }
+    appState.settings.settingsVersion = 5;
   } catch {
     return;
   }
@@ -757,6 +769,11 @@ function renderSetupControls() {
   byId("target-inputs").innerHTML = settings.targets.map((target, index) => (
     `<input id="target-${index}" inputmode="numeric" value="${esc(target)}" aria-label="Target ${index + 1} percent">`
   )).join("");
+  if (byId("stop-loss-buttons")) {
+    byId("stop-loss-buttons").innerHTML = (settings.stopLossChoices || []).map(choice => (
+      `<button class="segment-button ${choice === settings.stopLossPercent ? "active" : ""}" type="button" onclick="setStopLoss(${choice})">${choice === 0 ? "Off" : choice + "%"}</button>`
+    )).join("");
+  }
 }
 
 function forceAutoExpiry() {
@@ -783,6 +800,11 @@ function setMaxLoss(value) {
 }
 function setEntryOffset(value) {
   appState.settings.entryOffsetCents = Number(value);
+  saveDashboardSettings();
+  render();
+}
+function setStopLoss(value) {
+  appState.settings.stopLossPercent = Number(value);
   saveDashboardSettings();
   render();
 }
@@ -2171,9 +2193,11 @@ async function sendProposal(index) {
   }
   // OTOCO only applies to single-leg entries; the backend falls back to a plain entry otherwise.
   const otoco = Boolean(appState.settings.otoco) && proposal.structure === "single";
+  const slPct = Number(appState.settings.stopLossPercent ?? 50);
   let confirmLiveOrder = false;
   if (liveGateOpen()) {
-    const otocoLine = otoco ? "\\nOTOCO: entry placed as bracketed slices — target + stop attach at Schwab and activate on fill." : "";
+    const slText = slPct > 0 ? `${slPct}% below entry` : "none";
+    const otocoLine = otoco ? `\\nOTOCO: entry placed as bracketed slices — target + stop (SL ${slText}) attach at Schwab and activate on fill.` : "";
     confirmLiveOrder = window.confirm(`Submit LIVE Schwab order?\\n\\n${proposal.tos_order_line}\\nAccounts: ${selectedIds.join(", ")}\\nMax loss: ${money(proposal.max_loss)}${otocoLine}\\n\\nOnly continue if this is exactly the trade you want.`);
     if (!confirmLiveOrder) {
       if (status) status.textContent = "Live order cancelled before submission.";
@@ -2191,7 +2215,7 @@ async function sendProposal(index) {
   };
   const opts = authOptions("POST", body);
   const targets = encodeURIComponent((appState.settings.targets || [20, 50, 60]).join(","));
-  const result = await fetchJson(`/proposals/${encodeURIComponent(proposal.id)}/send?target_percentages=${targets}`, opts);
+  const result = await fetchJson(`/proposals/${encodeURIComponent(proposal.id)}/send?target_percentages=${targets}&stop_loss_percent=${encodeURIComponent(slPct)}`, opts);
   if (!result.ok) {
     if (status) status.textContent = result.data?.detail || result.data?.body || `HTTP ${result.status}`;
     return;
