@@ -162,9 +162,11 @@ _DASHBOARD_TEMPLATE = """<!doctype html>
       display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; margin-bottom: 0;
     }
     .kpi {
-      border: 1px solid var(--line); border-radius: 8px; padding: 7px 8px; min-height: 54px; background: #fbfcfe;
+      border: 1px solid var(--line); border-radius: 6px; padding: 3px 8px; min-height: 0; background: #fbfcfe;
+      display: flex; align-items: baseline; justify-content: space-between; gap: 8px;
     }
-    .kpi .value { margin-top: 2px; font-size: 16px; font-weight: 700; overflow-wrap: anywhere; }
+    .kpi .label { font-size: 10px; }
+    .kpi .value { margin-top: 0; font-size: 13px; font-weight: 700; overflow-wrap: anywhere; }
 
     /* --- grouped Platform status panel --- */
     .platform-strip { font-size: 12px; color: var(--muted); }
@@ -215,12 +217,12 @@ _DASHBOARD_TEMPLATE = """<!doctype html>
     .pos-table { width: 100%; border-collapse: collapse; font-size: 12px; table-layout: auto; }
     .pos-table th {
       text-align: left; color: var(--muted); font-weight: 700; font-size: 11px; text-transform: uppercase;
-      padding: 6px 8px; border-bottom: 1px solid var(--line); white-space: nowrap;
+      padding: 4px 8px; border-bottom: 1px solid var(--line); white-space: nowrap;
     }
     .pos-table th.num { text-align: right; }
     .pos-table th.sortable { cursor: pointer; user-select: none; }
     .pos-table th.sortable:hover { color: var(--ink); }
-    .pos-table td { padding: 6px 8px; border-bottom: 1px solid var(--line-soft); white-space: nowrap; }
+    .pos-table td { padding: 3px 8px; border-bottom: 1px solid var(--line-soft); white-space: nowrap; }
     .pos-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
     .pos-table td.mono { font-family: Consolas, "Courier New", monospace; font-size: 11px; white-space: normal; overflow-wrap: anywhere; }
     .pos-action { text-align: right; }
@@ -255,8 +257,8 @@ _DASHBOARD_TEMPLATE = """<!doctype html>
     .sym { font-weight: 700; }
     .tiny { font-size: 11px; color: var(--muted); }
     .muted { color: var(--muted); }
-    .good-text { color: var(--green); }
-    .bad-text { color: var(--red); }
+    .good-text { color: #0f4a24; }
+    .bad-text { color: #7d1414; }
     .warn-text { color: var(--amber); }
 
     /* --- right (proposal) panel --- */
