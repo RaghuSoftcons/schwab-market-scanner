@@ -105,9 +105,13 @@ server store, and there is **no trailing monitor** in the scanner backend at all
   scanner's native `confirm()` is functional and the custom overlay is cosmetic (skipped to avoid churn).
 - Tests: `tests/test_trailing_stop_display.py` (6). Suite 162 ✅.
 
-### Phase 5 — Optional polish
-- Reversal banner (`#reversal-banner` + countdown + confirm/dismiss) if the scanner emits reversals.
-- Richer audio (sound ready/mute/test + spoken "SYMBOL Side Indicator" phrase).
+### Phase 5 — Polish — ✅ DONE (applicable parts) 2026-07-01
+- **Spoken alert upgraded** to the Unified convention: the top-candidate voice now says
+  "`<SYMBOL> <Side>`" (e.g. "D I A Long") instead of just "Long"/"Short", with short all-caps tickers
+  spelled letter-by-letter (`spokenSymbol`). Mute + audio cue already existed.
+- **Reversal banner intentionally NOT ported:** the Unified banner is driven by the NT8 opposite-signal
+  stream; the scanner scans candidates and has no live reversal-signal source, so the banner would be dead
+  UI. `close_on_reversal` remains a setting. Skipped by design.
 
 ---
 

@@ -1346,12 +1346,21 @@ function toggleMute() {
   renderMuteButton();
 }
 
-function announceCandidate(direction) {
+// Spell short all-caps tickers letter-by-letter so TTS says "D I A", not "dia" — matches the
+// Unified dashboard's spoken-alert convention ("<SYMBOL> <Side>").
+function spokenSymbol(symbol) {
+  const s = String(symbol || "").trim().toUpperCase();
+  if (!s) return "";
+  return (/^[A-Z]{1,5}$/.test(s) && s.length <= 4) ? s.split("").join(" ") : s;
+}
+function announceCandidate(direction, symbol) {
   if (appState.muted) return;
   try {
     if (window.speechSynthesis && (direction === "long" || direction === "short")) {
-      const utter = new SpeechSynthesisUtterance(direction === "long" ? "Long" : "Short");
-      window.speechSynthesis.speak(utter);
+      const side = direction === "long" ? "Long" : "Short";
+      const sym = spokenSymbol(symbol);
+      const phrase = sym ? `${sym} ${side}` : side;
+      window.speechSynthesis.speak(new SpeechSynthesisUtterance(phrase));
     }
   } catch {}
   try {
@@ -1375,7 +1384,7 @@ function maybeAnnounceTopCandidate() {
   const top = (appState.scan?.top_candidates || [])[0];
   const symbol = top?.symbol || null;
   if (symbol && symbol !== appState.lastTopSymbol) {
-    if (appState.lastTopSymbol !== null) announceCandidate(top.direction);
+    if (appState.lastTopSymbol !== null) announceCandidate(top.direction, symbol);
     appState.lastTopSymbol = symbol;
   }
 }
