@@ -1139,6 +1139,7 @@ const POSITION_COLUMNS = [
   ["avg", "AVG", "num"],
   ["mark", "MARK", "num"],
   ["unrealized_pnl", "UNREALIZED", "num"],
+  ["pnl_pct", "P/L %", "num"],
 ];
 
 function setPositionsSort(key) {
@@ -1153,6 +1154,13 @@ function setPositionsSort(key) {
 
 function sortedPositions() {
   const positions = combineSpreadRows((appState.positions || []).slice());
+  // Derive P/L % from avg/mark so it can be shown and sorted like a real column.
+  positions.forEach((p) => {
+    const avg = Number(p.avg), mark = Number(p.mark);
+    p.pnl_pct = (Number.isFinite(avg) && avg !== 0 && Number.isFinite(mark))
+      ? ((mark - avg) / Math.abs(avg)) * 100 * (Number(p.qty) < 0 ? -1 : 1)
+      : null;
+  });
   const key = appState.positionsSort || "unrealized_pnl";
   const dir = appState.positionsSortDir || "desc";
   const col = POSITION_COLUMNS.find(c => c[0] === key);
@@ -1169,6 +1177,20 @@ function sortedPositions() {
     return dir === "asc" ? cmp : -cmp;
   });
   return positions;
+}
+
+// Stop cell: fixed stop shows the trigger; an ARMED trailing stop shows the effective trigger
+// (mark - offset) plus a ⤴ trail-distance chip so a live trail never reads as "--".
+function stopCellHtml(pos) {
+  if (pos.stop_price == null && !pos.stop_trailing) return "--";
+  const priceTxt = pos.stop_price == null ? "trail" : Number(pos.stop_price).toFixed(2);
+  if (pos.stop_trailing) {
+    const off = pos.stop_trail_offset == null ? "" : ` ⤴${Number(pos.stop_trail_offset).toFixed(2)}`;
+    const tip = pos.stop_trail_offset == null ? "armed trailing stop"
+      : `armed trailing stop — trails ${Number(pos.stop_trail_offset).toFixed(2)} behind the mark`;
+    return `<span style="color:#c0392b" title="${esc(tip)}">${priceTxt}${off}</span>`;
+  }
+  return `<span style="color:#c0392b">${priceTxt}</span>`;
 }
 
 function renderPositions() {
@@ -1199,7 +1221,7 @@ function renderPositions() {
       : `<button class="danger small" onclick="closePosition('${sym}','${acct}',${Math.abs(Number(pos.qty)) || 1},${isLong},'${statusId}')">Close</button>`;
     const symLabel = pos._display || formatOptionLabel(pos.symbol);
     const tgtCell = pos.target_price == null ? "--" : Number(pos.target_price).toFixed(2);
-    const stopCell = pos.stop_price == null ? "--" : `<span style="color:#c0392b">${Number(pos.stop_price).toFixed(2)}</span>`;
+    const stopCell = stopCellHtml(pos);
     return `<tr>
       <td>${esc(pos.account_label || pos.account_id)}</td>
       <td class="mono">${esc(symLabel)}</td>
@@ -1209,6 +1231,7 @@ function renderPositions() {
       <td class="num">${pos.avg == null ? "--" : Number(pos.avg).toFixed(2)}</td>
       <td class="num">${pos.mark == null ? "--" : Number(pos.mark).toFixed(2)}</td>
       <td class="num">${upnl}</td>
+      <td class="num">${pos.pnl_pct == null ? "--" : `<span class="${pnlClass(pos.pnl_pct)}">${(pos.pnl_pct > 0 ? "+" : "") + pos.pnl_pct.toFixed(1)}%</span>`}</td>
       <td class="pos-action">${action}<div class="send-status tiny" id="${statusId}"></div></td>
     </tr>`;
   }).join("");

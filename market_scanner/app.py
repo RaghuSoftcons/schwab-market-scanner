@@ -1181,7 +1181,12 @@ def _target_prices_for_orders(orders: list) -> dict:
 
 def _stop_prices_for_orders(orders: list) -> dict:
     """Map space-stripped OSI symbol -> the trigger of a resting CLOSING stop order (the OCO stop
-    child). Mirror of _target_prices_for_orders but reads STOP `stopPrice`. Powers the Stop column."""
+    child). Mirror of _target_prices_for_orders but reads STOP `stopPrice`. Powers the Stop column.
+
+    Once the trailing monitor ARMS a position the fixed STOP is replaced by a native TRAILING_STOP,
+    which reports its trigger as a MARK-linked `stopPriceOffset` (no plain `stopPrice`). For those we
+    emit a ('trail', offset) marker so the Stop column can show the effective trigger (mark - offset)
+    + the trail distance instead of going blank. Mirrors the Unified nt-bridge-v2 5b fix."""
     closing = {"SELL_TO_CLOSE", "BUY_TO_CLOSE"}
     out: dict = {}
 
@@ -1191,6 +1196,13 @@ def _stop_prices_for_orders(orders: list) -> dict:
         except (TypeError, ValueError):
             return None
 
+    def emit(order, marker):
+        for leg in (order.get("orderLegCollection") or []):
+            if str(leg.get("instruction", "")).upper() in closing:
+                sym = str((leg.get("instrument") or {}).get("symbol", "")).replace(" ", "")
+                if sym:
+                    out.setdefault(sym, marker)
+
     def scan(order):
         if not isinstance(order, dict):
             return
@@ -1199,17 +1211,38 @@ def _stop_prices_for_orders(orders: list) -> dict:
         if status not in _TERMINAL_ORDER_STATUSES and otype in {"STOP", "STOP_LIMIT"}:
             price = parse_price(order.get("stopPrice"))
             if price is not None:
-                for leg in (order.get("orderLegCollection") or []):
-                    if str(leg.get("instruction", "")).upper() in closing:
-                        sym = str((leg.get("instrument") or {}).get("symbol", "")).replace(" ", "")
-                        if sym:
-                            out.setdefault(sym, price)
+                emit(order, price)
+        elif status not in _TERMINAL_ORDER_STATUSES and otype in {"TRAILING_STOP", "TRAILING_STOP_LIMIT"}:
+            price = parse_price(order.get("stopPrice"))
+            if price is not None:
+                emit(order, price)  # Schwab populated a concrete trigger — use it directly
+            else:
+                offset = parse_price(order.get("stopPriceOffset"))
+                if offset is not None:
+                    emit(order, ("trail", offset))
         for child in (order.get("childOrderStrategies") or []):
             scan(child)
 
     for order in orders:
         scan(order)
     return out
+
+
+def _resolve_stop_marker(marker, mark) -> tuple[float | None, bool, float | None]:
+    """Turn a stop marker from _stop_prices_for_orders into (stop_price, trailing?, trail_offset).
+
+    A plain float is a fixed stop. A ('trail', offset) marker is an armed native TRAILING_STOP:
+    the effective trigger is mark - offset (needs a live mark; None-safe so it never blanks/raises)."""
+    if isinstance(marker, tuple) and len(marker) == 2 and marker[0] == "trail":
+        offset = marker[1]
+        try:
+            eff = round(float(mark) - float(offset), 2) if mark is not None else None
+        except (TypeError, ValueError):
+            eff = None
+        return eff, True, offset
+    if isinstance(marker, (int, float)):
+        return float(marker), False, None
+    return None, False, None
 
 
 def _load_spread_structure() -> dict:
@@ -1306,6 +1339,7 @@ def _positionrow_from_dict(d: dict, tracked_syms: set[str]) -> PositionRow:
     is_leg = bool(d.get("is_spread_leg"))
     qty = float(d.get("quantity") or 0)
     upnl = d.get("unrealized_pnl")
+    stop_price, stop_trailing, stop_trail_offset = _resolve_stop_marker(d.get("stop_price"), d.get("mark"))
     return PositionRow(
         account_id=d["account_id"],
         account_label=_account_alias(d["account_id"]),
@@ -1320,7 +1354,9 @@ def _positionrow_from_dict(d: dict, tracked_syms: set[str]) -> PositionRow:
         is_spread=is_leg,
         source="schwab",
         target_price=d.get("target_price"),
-        stop_price=d.get("stop_price"),
+        stop_price=stop_price,
+        stop_trailing=stop_trailing,
+        stop_trail_offset=stop_trail_offset,
         spread_id=d.get("spread_id"),
         is_spread_leg=is_leg,
         spread_aggregated=bool(d.get("spread_aggregated")),
@@ -1441,11 +1477,13 @@ def _tracked_positions_response(client: SchwabMarketDataClient | None = None) ->
                 qty = -qty
             primary_sym = str(primary.get("broker_symbol", "") or "")
             target_price = stop_price = None
+            stop_trailing = False
+            stop_trail_offset = None
             if client and account_hash:
                 targets, stops = account_targets_stops(account_hash)
                 key = primary_sym.replace(" ", "")
                 target_price = targets.get(key)
-                stop_price = stops.get(key)
+                stop_price, stop_trailing, stop_trail_offset = _resolve_stop_marker(stops.get(key), mark)
             rows.append(
                 PositionRow(
                     account_id=aid,
@@ -1463,6 +1501,8 @@ def _tracked_positions_response(client: SchwabMarketDataClient | None = None) ->
                     sent_at=p.get("sent_at", ""),
                     target_price=target_price,
                     stop_price=stop_price,
+                    stop_trailing=stop_trailing,
+                    stop_trail_offset=stop_trail_offset,
                 )
             )
     return PositionsResponse(

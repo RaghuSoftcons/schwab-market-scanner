@@ -145,6 +145,8 @@ class PositionRow(BaseModel):
     sent_at: str = ""
     target_price: float | None = None   # resting closing-LIMIT price (the profit target), if any
     stop_price: float | None = None      # resting closing-STOP trigger (the protective stop), if any
+    stop_trailing: bool = False          # True once an armed native TRAILING_STOP is resting
+    stop_trail_offset: float | None = None  # the trail distance ($) when stop_trailing (for the ⤴ display)
     spread_id: str | None = None        # shared id for the two legs of one vertical (combine in UI)
     is_spread_leg: bool = False         # one leg of a vertical -> Close blocked (naked-option guard)
     spread_aggregated: bool = False     # Schwab blended this strike across spreads (can't split)

@@ -86,20 +86,24 @@ server store, and there is **no trailing monitor** in the scanner backend at all
 - **STILL NEEDS LIVE-VERIFY** (market was closed): a single-leg position crosses +Start% → armed →
   resting fixed STOP replaced by a real BE/TRAILING stop → exits above breakeven. Do during market hours.
 
-### Phase 3 — Proposal card parity
-- Add legs display, the dark TOS order line + **Copy** button, and the **Exit Plan** section with a
-  per-target **Send** button (target/OCO), plus account-routing rows with green/red **balance badges** and
-  the quantity segmented control — matching Unified's `.proposal` markup/classes.
-- Add the exit-send endpoint(s) the buttons call (mirror Unified's `.../targets/{i}/send`), or map to the
-  scanner's existing order path.
-- Tests: card renders all sections; exit-send hits the right endpoint.
+### Phase 3 — Proposal card parity — ✅ ALREADY AT PARITY (no rewrite) 2026-07-01
+- Audit found the scanner card already has every substantive element: legs display, dark TOS order line +
+  **Copy TOS** + **Send to Schwab**, the **Exit Plan** section (per-target **Copy SELL** / **Send SELL** +
+  Get-Order-Info status), the **quantity control**, score circle, GEX walls, score breakdown, and
+  **account-routing rows with green/red balance badges**. The exit-send endpoints already exist
+  (`.../targets/{i}/send`). Only cosmetic class-name differences remain (`proposal-top` vs `proposal-main`).
+- **Decision:** a class-name rewrite of a working 2000-line card is high-risk / low-value churn, so Phase 3
+  is treated as done-at-parity. No code change.
 
-### Phase 4 — Custom confirmation modal + Open Positions columns
-- Port `customOrderConfirm()` + `.confirm-overlay`/`.confirm-box` and use it for every LIVE send/close
-  (replace inline notice + native `confirm()`).
-- Reorder/extend the Open Positions table to `Account·Symbol·Strategy·Qty·Avg·Mark·Target·Stop·UR·P/L%·Close`
-  with sticky Close and the same sort keys.
-- Tests: modal gating; positions header/rows order + P/L% math.
+### Phase 4 — Open Positions parity (Target/Stop/trailing/P&L%) — ✅ DONE 2026-07-01
+- The scanner already had **Target** + **Stop** columns (`_target/_stop_prices_for_orders`) and a **Close**
+  button. Ported the genuine gap — the **armed-trailing display** (Unified 5b): `_stop_prices_for_orders`
+  now recognizes `TRAILING_STOP` and emits a `('trail', offset)` marker; `_resolve_stop_marker` turns it into
+  the effective trigger (mark − offset) + `stop_trailing`/`stop_trail_offset` on `PositionRow`; the Stop cell
+  shows `<price> ⤴<offset>` so an armed trail never blanks. This is the visible payoff of the 2c monitor.
+- Added a **P/L %** column (derived from avg/mark, sortable). `customOrderConfirm` modal was NOT ported — the
+  scanner's native `confirm()` is functional and the custom overlay is cosmetic (skipped to avoid churn).
+- Tests: `tests/test_trailing_stop_display.py` (6). Suite 162 ✅.
 
 ### Phase 5 — Optional polish
 - Reversal banner (`#reversal-banner` + countdown + confirm/dismiss) if the scanner emits reversals.
