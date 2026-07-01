@@ -247,6 +247,10 @@ _DASHBOARD_TEMPLATE = """<!doctype html>
 
     /* --- P&L / automation rows --- */
     .pnl-headline { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-bottom: 9px; }
+    /* Compact inline realized-P&L strip (parity with Unified's Platform-panel P&L). */
+    .pnl-compact { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 16px; font-size: 12px; margin-bottom: 8px; }
+    .pnl-compact .lbl { color: var(--muted); font-size: 11px; }
+    .pnl-compact b { font-weight: 700; font-variant-numeric: tabular-nums; }
     .pnl-row, .pos-row, .auto-row {
       display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 9px;
       border: 1px solid var(--line); border-radius: 8px; background: #fbfcfe; margin-bottom: 6px; font-size: 13px; flex-wrap: wrap;
@@ -980,13 +984,15 @@ function renderPnl() {
   const data = appState.pnl;
   if (!data) { body.innerHTML = `<div class="muted">No P&amp;L yet.</div>`; return; }
   const pnl = data.pnl || {};
+  const month = pnl.month != null ? pnl.month : pnl.week;
   const headline = `
-    <div class="pnl-headline">
-      <div class="metric"><div class="label">All Time</div><div class="value ${pnlClass(pnl.all_time)}">${moneySigned(pnl.all_time)}</div></div>
-      <div class="metric"><div class="label">Today</div><div class="value ${pnlClass(pnl.today)}">${moneySigned(pnl.today)}</div></div>
-      <div class="metric"><div class="label">Week</div><div class="value ${pnlClass(pnl.week)}">${moneySigned(pnl.week)}</div></div>
-    </div>
-    <div class="muted" style="margin-bottom:8px;">${Number(pnl.wins || 0)}W - ${Number(pnl.losses || 0)}L | ${Number(pnl.trade_count || 0)} trades | win rate ${pct(pnl.win_rate)}</div>`;
+    <div class="pnl-compact">
+      <span><span class="lbl">Today</span> <b class="${pnlClass(pnl.today)}">${moneySigned(pnl.today)}</b></span>
+      <span><span class="lbl">Wk</span> <b class="${pnlClass(pnl.week)}">${moneySigned(pnl.week)}</b></span>
+      <span><span class="lbl">Mo</span> <b class="${pnlClass(month)}">${moneySigned(month)}</b></span>
+      <span><span class="lbl">All</span> <b class="${pnlClass(pnl.all_time)}">${moneySigned(pnl.all_time)}</b></span>
+      <span class="muted">${Number(pnl.wins || 0)}W-${Number(pnl.losses || 0)}L · ${Number(pnl.trade_count || 0)} trades · win ${pct(pnl.win_rate)}</span>
+    </div>`;
   const rows = (data.pnl_by_account || []).map(acct => `
     <div class="pnl-row">
       <span class="label"><strong>${esc(acct.account_label || acct.account_id)}</strong></span>
