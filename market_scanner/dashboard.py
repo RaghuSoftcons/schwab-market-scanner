@@ -298,6 +298,15 @@ _DASHBOARD_TEMPLATE = """<!doctype html>
 
     .candidate-summary, .freshness { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin: 8px 0; }
     .freshness { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    /* Compact "N proposals" at-a-glance summary above the full cards (parity with Unified). */
+    .proposal-summary { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; margin: 8px 0; background: var(--panel); font-size: 12px; }
+    .proposal-summary .ps-title { font-weight: 700; color: var(--muted); font-size: 11px; text-transform: uppercase; margin-bottom: 4px; }
+    .proposal-summary .ps-row { display: flex; gap: 8px; padding: 2px 0; align-items: baseline; }
+    .proposal-summary .ps-row .ps-trade { font-weight: 700; min-width: 58px; }
+    .proposal-summary .ps-row .ps-type { flex: 0 0 auto; min-width: 150px; }
+    .proposal-summary .ps-row .ps-strike { flex: 1; text-align: left; font-variant-numeric: tabular-nums; }
+    .proposal-summary .ps-row .ps-score { font-variant-numeric: tabular-nums; color: var(--muted); }
+    .proposal-summary .ps-row .ps-loss { font-variant-numeric: tabular-nums; color: var(--muted); min-width: 92px; text-align: right; }
     .metric { border: 1px solid var(--line); border-radius: 8px; padding: 7px 8px; background: #fbfcfe; min-width: 0; min-height: 54px; }
     .metric .value { margin-top: 2px; font-size: 16px; font-weight: 700; overflow-wrap: anywhere; }
 
@@ -606,6 +615,7 @@ _DASHBOARD_TEMPLATE = """<!doctype html>
               <div class="metric"><div class="label">PM High</div><div class="value" id="metric-pmh">...</div></div>
               <div class="metric"><div class="label">Prev High</div><div class="value" id="metric-prev-high">...</div></div>
             </div>
+            <div id="proposal-summary" class="proposal-summary" style="display:none;"></div>
             <div id="proposal-cards"></div>
           </div>
         </section>
@@ -1695,6 +1705,7 @@ function renderProposal(candidate) {
     byId("proposal-notice").textContent = "Refresh prices, select a candidate, then build selected proposals.";
     byId("proposal-cards").innerHTML = `<div class="empty">No proposal selected.</div>`;
     renderQuoteFreshness([]);
+    renderProposalSummary([]);
     setMetrics(null);
     return;
   }
@@ -1717,6 +1728,7 @@ function renderProposal(candidate) {
       : `Click Build ${candidate.symbol} to fetch option proposals for only this ticker.`;
   setMetrics(metrics);
   renderQuoteFreshness(proposals);
+  renderProposalSummary(proposals);
   byId("proposal-cards").innerHTML = proposals.length
     ? proposals.map((proposal, index) => proposalCard(proposal, index)).join("")
     : `<div class="empty">${esc((blockedReasons.length ? blockedReasons : [`Build ${candidate.symbol} to fetch selected proposals.`]).join(" | "))}</div>`;
@@ -1788,6 +1800,40 @@ function moneynessTone(value) {
   if (value === "ITM") return "green";
   if (value === "OTM") return "gray";
   return "";
+}
+
+// Compact "N proposals" summary above the cards — parity with the Unified dashboard.
+function proposalTypeLabel(proposal) {
+  const leg = primaryLeg(proposal);
+  const right = String(leg && leg.right || "").toUpperCase() === "CALL" ? "Call" : "Put";
+  const m = proposalMoneyness(proposal);
+  return (m === "ATM/OTM" ? right : `${m} ${right}`);
+}
+function proposalStrikeLabel(proposal) {
+  const legs = proposal.legs || [];
+  if (!legs.length) return "";
+  const fmt = (leg) => `${formatTosStrike(leg.strike)}${leg.right === "CALL" ? "C" : "P"}`;
+  if (proposal.structure === "debit_vertical" && legs.length >= 2) {
+    const longLeg = legs.find((l) => l.action === "BUY") || legs[0];
+    const shortLeg = legs.find((l) => l.action === "SELL") || legs[1];
+    return `+${fmt(longLeg)}/-${fmt(shortLeg)}`;
+  }
+  return fmt(legs[0]);
+}
+function renderProposalSummary(proposals) {
+  const box = byId("proposal-summary");
+  if (!box) return;
+  const list = proposals || [];
+  if (!list.length) { box.style.display = "none"; box.innerHTML = ""; return; }
+  const rows = list.map((p, i) => (
+    `<div class="ps-row"><span class="ps-trade">Trade #${i + 1}</span>`
+    + `<span class="ps-type">${esc(proposalTypeLabel(p))}</span>`
+    + `<span class="ps-strike">${esc(proposalStrikeLabel(p))}</span>`
+    + `<span class="ps-score">Score ${Number(p.score || 0).toFixed(0)}</span>`
+    + `<span class="ps-loss">Max Loss $${Number(p.max_loss || 0).toFixed(0)}</span></div>`
+  )).join("");
+  box.innerHTML = `<div class="ps-title">${list.length} proposal${list.length > 1 ? "s" : ""}</div>${rows}`;
+  box.style.display = "";
 }
 
 function proposalUnitLimit(proposal) {
